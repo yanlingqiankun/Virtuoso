@@ -42,7 +42,9 @@ namespace ParametricDramDirectoryMSI
 			SubsecondTime total_fault_latency;
 			SubsecondTime walker_is_active;
 			SubsecondTime *tlb_latency_per_level;
-			UInt64 *tlb_hit_page_sizes; 
+			SubsecondTime tlb_flush_latency;
+			UInt64 *tlb_hit_page_sizes;
+			UInt64 tlb_flush;
 
 		} translation_stats;
 		
@@ -60,6 +62,8 @@ namespace ParametricDramDirectoryMSI
 		PageTable* getPageTable();
 		void setMaxPWCLevel(int max_pwc_level_);
 		int getMaxPWCLevel();
+
+		bool MMUFlushTLB(int appid, IntPtr address, Core::lock_signal_t lock, bool modeled, bool count) override;
 	};
 
 }

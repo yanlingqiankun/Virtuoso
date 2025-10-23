@@ -3,14 +3,18 @@
 #include "physical_memory_allocator.h"
 #include <iostream>
 #include <fstream>
+#include "page_migration/hemem.h"
 
 using namespace std;
 class PageFaultHandlerBase
 {
+    private:
+        PhysicalMemoryAllocator *getAllocator() {return this->allocator;}
     protected:
         PhysicalMemoryAllocator *allocator;
 
     public:
+        friend class Hemem::Hemem;
 
         PageFaultHandlerBase(PhysicalMemoryAllocator *allocator){
             this->allocator = allocator;

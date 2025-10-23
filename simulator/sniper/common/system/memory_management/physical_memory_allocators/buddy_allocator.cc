@@ -47,7 +47,7 @@ m_memory_size(memory_size),  m_max_order(max_order), m_kernel_size(kernel_size),
 	}
 
 
-	std::cout << "[Buddy] Memory Size: " << m_memory_size << std::endl;
+	std::cout << "[Buddy] Memory Size in MB: " << m_memory_size << std::endl;
 
 
 	UInt64 pages_in_block = static_cast<UInt64>(pow(2, m_max_order)); // start with max

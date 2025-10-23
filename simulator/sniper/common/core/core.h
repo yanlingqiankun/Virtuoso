@@ -147,6 +147,8 @@ class Core
          m_spin_elapsed_time += elapsed_time;
       }
 
+      int CoreFlushTLB(int appid, IntPtr address);
+
    private:
       core_id_t m_core_id;
       const ComponentPeriod* m_dvfs_domain;

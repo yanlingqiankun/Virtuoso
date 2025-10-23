@@ -5,7 +5,7 @@ include $(SIM_ROOT)/Makefile.config
 DIRECTORIES := ${shell find $(SIM_ROOT)/common -type d -print} \
 	$(SIM_ROOT)/include $(SIM_ROOT)/libtorch/include $(SIM_ROOT)/libtorch/include/torch/csrc/api/include
 
-LIBCARBON_SOURCES = $(foreach dir,$(DIRECTORIES),$(wildcard $(dir)/*.cc)) \
+LIBCARBON_SOURCES = $(foreach dir,$(DIRECTORIES),$(wildcard $(dir)/*.cc) $(wildcard $(dir)/*.cpp)) \
 	$(wildcard $(SIM_ROOT)/common/config/*.cpp)
 
 LIBCARBON_OBJECTS = $(patsubst %.cpp,%.o,$(patsubst %.c,%.o,$(patsubst %.cc,%.o,$(LIBCARBON_SOURCES) ) ) )

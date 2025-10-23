@@ -20,7 +20,9 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-//#define DEBUG_MEM_MANAGER 
+#include "mimicos.h"
+
+//#define DEBUG_MEM_MANAGER
 
 #if 0
    extern Lock iolock;
@@ -582,6 +584,8 @@ namespace ParametricDramDirectoryMSI
 		// Check if the memory access resulted in a DRAM access
 		if(result == HitWhere::where_t::DRAM || result == HitWhere::where_t::DRAM_CACHE || result == HitWhere::where_t::DRAM_LOCAL || result == HitWhere::where_t::DRAM_REMOTE){
 			dram_access = true;
+			if (getPageMigrationEnable())
+				Sim()->getMimicOS()->getPageTracer()->record(address, mem_op_type == Core::mem_op_t::WRITE ? AccessType::WRITE:AccessType::READ, getCore()->getThread()->getAppId(),eip);
 		}
 
 
@@ -846,4 +850,11 @@ namespace ParametricDramDirectoryMSI
 	{
 		m_nuca_cache->measureStats();
 	}
+
+	bool MemoryManager::MMFlushTLB(int appid, IntPtr address, Core::lock_signal_t lock, bool modeled) {
+		return m_mmu->MMUFlushTLB(appid, address, lock,
+			modeled == Core::MEM_MODELED_NONE || modeled == Core::MEM_MODELED_COUNT ? false : true,
+				modeled == Core::MEM_MODELED_NONE ? false : true);
+	}
+
 }

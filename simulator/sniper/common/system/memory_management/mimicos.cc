@@ -7,10 +7,11 @@
 #include "rangetable_factory.h"
 #include "dvfs_manager.h"
 #include <string>
+#include "page_migration/migration_factory.h"
 
 using namespace std;
 
-MimicOS::MimicOS(bool _is_guest) : m_page_fault_latency(NULL, 0)
+MimicOS::MimicOS(bool _is_guest) : m_page_fault_latency(NULL, 0), tlb_flush_latency(NULL, 0)
 {
 
     is_guest = _is_guest;
@@ -46,12 +47,44 @@ MimicOS::MimicOS(bool _is_guest) : m_page_fault_latency(NULL, 0)
     }
 
     std::cout << "[MimicOS] Page fault latency is " << m_page_fault_latency.getLatency().getNS() << " ns" << std::endl;
+
+    if (Sim()->getCfg()->hasKey("perf_model/migration_enable")) {
+        int sampling_frequency = Sim()->getCfg()->getInt("perf_model/" + mimicos_name + "/sampling_frequency");
+        page_tracer = new PageTracer(sampling_frequency);
+        page_migration_handler = MigrationFactory::createMigration(mimicos_name, page_tracer);
+        if (page_migration_handler) {
+            tlb_flush_latency = ComponentLatency(Sim()->getDvfsManager()->getGlobalDomain(),
+                                                 Sim()->getCfg()->getInt(
+                                                     "perf_model/" + mimicos_name + "/tlb_flush_latency"));
+            std::cout << "[MimicOS] Page migration handler is " << page_migration_handler->getName() << std::endl;
+            std::cout << "[MimicOS] TLB flush latency is " << tlb_flush_latency.getLatency().getNS() << "ns" << std::endl;
+            page_migration_handler->start();
+        } else {
+            std::cout << "[MimicOS] Page migration handler disabled" << std::endl;
+        }
+    } else {
+        std::cout << "[MimicOS] Page migration disabled" << std::endl;
+    }
 }
 
 MimicOS::~MimicOS()
 {
     delete m_memory_allocator;
 }
+
+void MimicOS::flushTLB(int appid, UInt64 addr) {
+    // std::cout << "[TLBSHOOTDOWN] flush [0x" << std::hex << addr << "] of appid [" << appid << "]" << std::endl;
+    std::vector<UInt32> ret = Sim()->getCoreManager()->CoresFlushTLB(appid, addr);
+    std::cout << "[TLBSHOOTDOWN] Address 0x" << std::hex << addr
+          << "[ ";
+
+    for (UInt32 core_id : ret) {
+        std::cout << core_id << " ";
+    }
+
+    std::cout << " ]" << std::dec << std::endl;
+}
+
 
 void MimicOS::handle_page_fault(IntPtr address, IntPtr core_id, int frames)
 {

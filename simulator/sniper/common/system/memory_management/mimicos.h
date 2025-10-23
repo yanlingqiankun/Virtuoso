@@ -42,6 +42,10 @@ private:
     // Use an unordered map to store the virtual memory areas for each application
     std::unordered_map<UInt64, std::vector<VMA>> vm_areas;
 
+    PageTracer *page_tracer;
+    PageMigration *page_migration_handler;
+    ComponentLatency tlb_flush_latency;
+
 public:
     MimicOS(bool _is_guest);
     ~MimicOS();
@@ -75,4 +79,8 @@ public:
     PageFaultHandlerBase *getPageFaultHandler() { return page_fault_handler; }
     SubsecondTime getPageFaultLatency() { return m_page_fault_latency.getLatency(); }
 
+    PageTracer *getPageTracer() {return page_tracer;}
+    PageMigration *getPageMigrationHandler() { return page_migration_handler; }
+    SubsecondTime getTLBFlushLatency() {return tlb_flush_latency.getLatency(); }
+    void flushTLB(int app_id, UInt64 addr);
 };

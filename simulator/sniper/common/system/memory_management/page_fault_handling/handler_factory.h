@@ -5,6 +5,7 @@
 # include "eager_paging_fault_handler.h"
 # include "physical_memory_allocator.h"
 # include "page_fault_handler_base.h"
+# include "hemem_page_fault_handler.h"
 # include <string>
 
 
@@ -20,6 +21,8 @@ class HandlerFactory {
                 return new UtopiaPageFaultHandler(allocator);
             } else if (handlerType == "eager_paging") {
                 return new EagerPagingFaultHandler(allocator);
+            } else if (handlerType == "hemem") {
+                return new HememPagingFultHandler(allocator, is_guest);
             }
               else {
                 return NULL;

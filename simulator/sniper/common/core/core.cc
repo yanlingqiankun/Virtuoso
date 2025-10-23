@@ -586,3 +586,11 @@ Core::measureCacheStats()
 {
    getMemoryManager()->measureNucaStats();
 }
+
+int Core::CoreFlushTLB(int appid, IntPtr address)
+{
+   if (m_memory_manager->MMFlushTLB(appid, address, NONE, MEM_MODELED_NONE)) {
+      return getId();
+   }
+   return -1;
+}

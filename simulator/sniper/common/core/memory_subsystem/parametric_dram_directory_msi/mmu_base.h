@@ -88,5 +88,6 @@ namespace ParametricDramDirectoryMSI
 		SubsecondTime calculatePTWCycles(PTWResult ptw_result, bool count, bool modeled, IntPtr eip, Core::lock_signal_t lock);
 		Core* getCore() { return core; }
 		String getName() { return name; }
+		virtual bool MMUFlushTLB(int appid, IntPtr address, Core::lock_signal_t lock, bool modeled, bool count) {return false;}
 	};
 }

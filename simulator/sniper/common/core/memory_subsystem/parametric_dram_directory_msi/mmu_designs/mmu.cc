@@ -657,5 +657,48 @@ namespace ParametricDramDirectoryMSI
 	{
 		return ;
 	}
+	bool MemoryManagementUnit::MMUFlushTLB(int appid, IntPtr address, Core::lock_signal_t lock, bool modeled, bool count)
+	{
+#ifdef DEBUG_TLB_SHOOTDOWN
+		log_file << std::endl;
+		log_file << "[SHOOTDOWN] ---- Starting address SHOOTDOWN for virtual address: " << address <<  " ---- at time " << shmem_perf_model->getElapsedTime(ShmemPerfModel::_USER_THREAD) << std::endl;
+#endif
+		SubsecondTime time = shmem_perf_model->getElapsedTime(ShmemPerfModel::_USER_THREAD);
+		TLBSubsystem tlbs = tlb_subsystem->getTLBSubsystem();
+		CacheBlockInfo *tlb_block_info = NULL; // This is the block info that we get from the TLB lookup
+
+		// Search TLB entry starting in LOW level
+		UInt32 find_level = ~0;
+		bool find_tlb = true;
+		for (UInt32 j = tlbs.size() - 1;  find_tlb && j < tlbs.size() ; j--) {
+			find_tlb = false;
+			for (UInt32 i = 0; i < tlbs[j].size(); i++) {
+
+				tlb_block_info = tlbs[j][i]->lookup(address, time, count, lock, NULL, modeled, count, NULL);
+				if (tlb_block_info != NULL) {
+					// If we find the tlb, invalid it
+					tlb_block_info->invalidate();
+					find_tlb = true;
+				}
+				if (find_level == ~0) {
+					// We first find the TLB and record some information
+					SubsecondTime tlb_flush_latency = tlbs[i][j]->getLatency();
+					// add flush latency
+					if (count)
+					{
+						translation_stats.tlb_flush++;
+						translation_stats.tlb_flush_latency += tlb_flush_latency;
+					}
+					find_level = j;
+				}
+			}
+			if (!find_tlb) {
+				// The first level that does not contain the tlb
+				return false;
+			}
+		}
+		return true;
+	}
+
 
 }

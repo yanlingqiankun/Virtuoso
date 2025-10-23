@@ -1,13 +1,16 @@
 #ifndef __MEMORY_MANAGER_BASE_H__
 #define __MEMORY_MANAGER_BASE_H__
 
+#include "config.hpp"
 #include "core.h"
 #include "network.h"
 #include "mem_component.h"
 #include "performance_model.h"
 #include "shmem_perf_model.h"
 #include "nuca_cache.h"
+#include "page_migration/page_tracer.h"
 #include "pr_l1_pr_l2_dram_directory_msi/shmem_msg.h"
+#include "simulator.h"
 
 void MemoryManagerNetworkCallback(void *obj, NetPacket packet);
 
@@ -25,6 +28,7 @@ private:
    Core *m_core;
    Network *m_network;
    ShmemPerfModel *m_shmem_perf_model;
+   bool page_migration_enable = false;
 
    void parseMemoryControllerList(String &memory_controller_positions, std::vector<core_id_t> &core_list_from_cfg_file, SInt32 application_core_count);
 
@@ -40,6 +44,9 @@ public:
                                                                                        m_network(network),
                                                                                        m_shmem_perf_model(shmem_perf_model)
    {
+      if (Sim()->getCfg()->hasKey("perf_model/migration_enable")) {
+         page_migration_enable = true;
+      }
    }
    virtual ~MemoryManagerBase() {}
 
@@ -105,6 +112,9 @@ public:
                                        Core *core,
                                        Network *network,
                                        ShmemPerfModel *shmem_perf_model);
+   bool getPageMigrationEnable(){return page_migration_enable;}
+   void setPageMigrationEnable(){page_migration_enable = true;}
+   virtual bool MMFlushTLB(int appid, IntPtr address, Core::lock_signal_t lock, bool modeled){ return false; }
 };
 
 #endif /* __MEMORY_MANAGER_BASE_H__ */

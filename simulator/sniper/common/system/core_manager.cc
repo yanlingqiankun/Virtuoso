@@ -126,3 +126,17 @@ bool CoreManager::amiUserThread()
 {
     return m_thread_type_tls->getInt() == APP_THREAD;
 }
+
+std::vector<UInt32> CoreManager::CoresFlushTLB(UInt32 app_id, IntPtr vaddr) {
+   std::vector<UInt32> cores_with_tlb;
+   int ret = -1;
+   for (auto it = m_cores.begin(); it != m_cores.end(); ++it) {
+      Core *core_ptr = *it;
+      if (core_ptr != nullptr) {
+         if ( (ret = core_ptr->CoreFlushTLB(app_id, vaddr)) != -1) {
+            cores_with_tlb.push_back(ret);
+         }
+      }
+   }
+   return cores_with_tlb;
+}

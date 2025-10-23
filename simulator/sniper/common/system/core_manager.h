@@ -50,6 +50,7 @@ class CoreManager
       bool amiUserThread();
       bool amiCoreThread();
       bool amiSimThread();
+      std::vector<UInt32> CoresFlushTLB(UInt32 app_id, UInt64 vaddr);
    private:
 
       UInt32 *tid_map;

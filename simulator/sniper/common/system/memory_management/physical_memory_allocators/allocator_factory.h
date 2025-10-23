@@ -5,6 +5,7 @@
 #include "eager_paging.h"
 #include "config.hpp"
 #include "physical_memory_allocator.h"
+#include "hemem_allocator.h"
 
 class AllocatorFactory
 {
@@ -45,6 +46,13 @@ public:
             String frag_type = Sim()->getCfg()->getString("perf_model/"+allocator_name+"/frag_type");
             int max_order = Sim()->getCfg()->getInt("perf_model/"+allocator_name+"/max_order");
             return new EagerPagingAllocator(allocator_name, memory_size, max_order, kernel_size, frag_type);
+        }
+        else if (allocator_type == "hemem") { // Based on [Amanda Raybuck+  SOSP '21]
+            String frag_type = Sim()->getCfg()->getString("perf_model/"+allocator_name+"/frag_type");
+            int max_order = Sim()->getCfg()->getInt("perf_model/"+allocator_name+"/max_order");
+            int dram_size = Sim()->getCfg()->getInt("perf_model/"+allocator_name+"/dram_size");
+            int nvm_size = Sim()->getCfg()->getInt("perf_model/"+allocator_name+"/nvm_size");
+            return new HememAllocator(allocator_name, dram_size, nvm_size, max_order, kernel_size, frag_type);
         }
 
         else{
