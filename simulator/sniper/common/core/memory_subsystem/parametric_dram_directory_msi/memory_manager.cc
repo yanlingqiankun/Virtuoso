@@ -22,7 +22,7 @@
 
 #include "mimicos.h"
 
-//#define DEBUG_MEM_MANAGER
+// #define DEBUG_MEM_MANAGER
 
 #if 0
    extern Lock iolock;
@@ -727,6 +727,21 @@ namespace ParametricDramDirectoryMSI
 			}
 			break;
 
+		case MemComponent::CORE: {
+			switch (sender_mem_component)
+			{
+				case MemComponent:: CORE:
+				{
+					getCore()->handleMsgFromOtherCore(sender, shmem_msg);
+					break;
+				}
+				default:
+					LOG_PRINT_ERROR("Unrecognized sender component(%u)",
+							sender_mem_component);
+					break;
+			}
+		}
+		break;
 		default:
 			LOG_PRINT_ERROR("Unrecognized receiver component(%u)",
 							receiver_mem_component);
@@ -855,6 +870,22 @@ namespace ParametricDramDirectoryMSI
 		return m_mmu->MMUFlushTLB(appid, address, lock,
 			modeled == Core::MEM_MODELED_NONE || modeled == Core::MEM_MODELED_COUNT ? false : true,
 				modeled == Core::MEM_MODELED_NONE ? false : true);
+	}
+
+	void MemoryManager::flushCachePage(IntPtr page_address, MemComponent::component_t cache_level) {
+		UInt32 page_size = 4096; // 4KB
+		UInt32 num_cache_lines = page_size / m_cache_block_size;
+
+		for (UInt32 i = 0; i < num_cache_lines; i++) {
+			IntPtr cache_line_addr = page_address + (i * m_cache_block_size);
+			m_cache_cntlrs[cache_level]->updateCacheBlock(
+				cache_line_addr,
+				CacheState::INVALID,
+				Transition::COHERENCY,
+				NULL,
+				ShmemPerfModel::_USER_THREAD
+			);
+		}
 	}
 
 }

@@ -9,6 +9,9 @@
 #include "vma.h"
 #include "fixed_types.h"
 #include <mutex>
+#include <queue>
+
+#include "../page_migration/hemem.h"
 
 class HememAllocator :public PhysicalMemoryAllocator {
 public:
@@ -22,12 +25,15 @@ public:
 
     void deallocate(Hemem::hemem_page *page, bool is_dram, UInt64 core_id);
     Hemem::hemem_page *getAFreePage(bool is_dram);
+    std::queue<Hemem::hemem_page*> getFreePages(std::queue<bool> is_dram);
+    void deallocatePages(std::queue<Hemem::hemem_page*> pages, std::queue<bool> is_dram, UInt64 app_id);
 
 private:
     Hemem::fifo_list dram_free_list;
     Hemem::fifo_list nvm_free_list;
     int page_size = 4096;
     std::mutex mutex_alloc;
+    UInt64 dram_reserved_threshold;
 };
 
 #endif //HEMEM_ALLOCATOR_H

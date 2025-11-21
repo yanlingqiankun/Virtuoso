@@ -165,5 +165,6 @@ namespace ParametricDramDirectoryMSI
 		void incrElapsedTime(SubsecondTime latency, ShmemPerfModel::Thread_t thread_num = ShmemPerfModel::NUM_CORE_THREADS);
 		void incrElapsedTime(MemComponent::component_t mem_component, CachePerfModel::CacheAccess_t access_type, ShmemPerfModel::Thread_t thread_num = ShmemPerfModel::NUM_CORE_THREADS);
 		bool MMFlushTLB(int appid, IntPtr address, Core::lock_signal_t lock, bool modeled) override;
+		void flushCachePage(IntPtr page_address, MemComponent::component_t cache_level) override;
 	};
 }

@@ -8,10 +8,14 @@
 #include "dvfs_manager.h"
 #include <string>
 #include "page_migration/migration_factory.h"
+#include "page_migration/hemem.h"
+#include "core_manager.h"
+#include "hemem_allocator.h"
 
 using namespace std;
 
-MimicOS::MimicOS(bool _is_guest) : m_page_fault_latency(NULL, 0), tlb_flush_latency(NULL, 0)
+MimicOS::MimicOS(bool _is_guest) : m_page_fault_latency(NULL, 0), tlb_flush_latency(NULL, 0), 
+                                ipi_initiate_latency(NULL, 0), ipi_handle_latency(NULL, 0)
 {
 
     is_guest = _is_guest;
@@ -56,6 +60,12 @@ MimicOS::MimicOS(bool _is_guest) : m_page_fault_latency(NULL, 0), tlb_flush_late
             tlb_flush_latency = ComponentLatency(Sim()->getDvfsManager()->getGlobalDomain(),
                                                  Sim()->getCfg()->getInt(
                                                      "perf_model/" + mimicos_name + "/tlb_flush_latency"));
+            ipi_initiate_latency = ComponentLatency(Sim()->getDvfsManager()->getGlobalDomain(),
+                                                 Sim()->getCfg()->getInt(
+                                                     "perf_model/" + mimicos_name + "/ipi_initiate_latency"));
+            ipi_handle_latency = ComponentLatency(Sim()->getDvfsManager()->getGlobalDomain(),
+                                                 Sim()->getCfg()->getInt(
+                                                     "perf_model/" + mimicos_name + "/ipi_handle_latency"));
             std::cout << "[MimicOS] Page migration handler is " << page_migration_handler->getName() << std::endl;
             std::cout << "[MimicOS] TLB flush latency is " << tlb_flush_latency.getLatency().getNS() << "ns" << std::endl;
             page_migration_handler->start();
@@ -72,22 +82,294 @@ MimicOS::~MimicOS()
     delete m_memory_allocator;
 }
 
-void MimicOS::flushTLB(int appid, UInt64 addr) {
-    // std::cout << "[TLBSHOOTDOWN] flush [0x" << std::hex << addr << "] of appid [" << appid << "]" << std::endl;
-    std::vector<UInt32> ret = Sim()->getCoreManager()->CoresFlushTLB(appid, addr);
-    std::cout << "[TLBSHOOTDOWN] Address 0x" << std::hex << addr
-          << "[ ";
+// core_id_t MimicOS::flushTLB(int app_id, std::queue<IntPtr> addrs) {
+//     CoreManager *core_manager = Sim()->getCoreManager();
+//     UInt32 total_cores = Sim()->getConfig()->getTotalCores();
+//
+//     // Randomly select a core as the issuer to flush TLB
+//     UInt32 issuer_core_id = rand() % total_cores;
+//
+//     core_manager->getCoreFromID(issuer_core_id)->enqueueTLBShootdownRequest(addrs, issuer_core_id, app_id);
+//
+//     return issuer_core_id;
+// }
+//
+// bool MimicOS::move_pages(std::queue<Hemem::hemem_page*> pages, std::queue<bool> migrate_up, int app_id)
+// {
+//     // Hemem::hemem_page* src_page = static_cast<Hemem::hemem_page*>(page_ptr);
+//     HememAllocator* allocator = dynamic_cast<HememAllocator*>(getMemoryAllocator());
+//     if (!allocator) {
+//         return false;
+//     }
+//
+//     // 1. To get the source page metadata
+//     allocator->deallocatePages(pages, migrate_up, app_id); // Temporarily deallocate to get free pages
+//
+//     std::queue<IntPtr> addrs;
+//     while (!pages.empty()) {
+//         Hemem::hemem_page* page = pages.front();
+//         pages.pop();
+//         addrs.push(page->vaddr);
+//     }
+//
+//     // 2. Get free pages in the destination memory tier
+//     // std::queue<Hemem::hemem_page*> dst_page = allocator->getFreePages(migrate_up /* queue of is_dram */);
+//
+//     // if (dst_page == nullptr) {
+//     //     // Optional: Implement logic to swap out a cold page to make space
+//     //     std::cout << "[MimicOS] No free page available for migration. Migration failed." << std::endl;
+//     //     return false;
+//     // }
+//
+//     // 2. Swap physical addresses and metadata
+//     // UInt64 old_phy_addr = src_page->phy_addr;
+//     // auto temp_phy_addr = src_page->phy_addr;
+//     // src_page->phy_addr = dst_page->phy_addr;
+//     // dst_page->phy_addr = temp_phy_addr;
+//
+//     // src_page->in_dram = migrate_up;
+//
+//     // 1. Unmap the old page table entry
+//     ParametricDramDirectoryMSI::PageTable* pt = getPageTable(app_id);
+//     if (pt) {
+//         // pt->page_unmap(src_page->vaddr);
+//         for (int i = 0; i < addrs.size(); i++) {
+//             IntPtr page_addr = addrs.front();
+//             addrs.pop();
+//             pt->page_moving(page_addr);
+//         }
+//     }
+//     // 3. Flush the TLB for the given virtual address, by the way flush cache of pages
+//     core_id_t issuer_core_id = flushTLB(app_id, addrs);
+//
+//     // 4. move from old to new locations
+//     std::queue<Hemem::hemem_page*> dst_page = allocator->getFreePages(migrate_up);
+//     std::queue<IntPtr> dst_addrs;
+//     while (!dst_page.empty()) {
+//         Hemem::hemem_page* page = dst_page.front();
+//         dst_page.pop();
+//         dst_addrs.push(page->vaddr);
+//     }
+//     CoreManager *core_manager = Sim()->getCoreManager();
+//     core_manager->getCoreFromID(issuer_core_id)->getShmemPerfModel()->getElapsedTime(ShmemPerfModel::_USER_THREAD);
+//
+//
+//     return true;
+// }
+/**
+ * @brief (Modified) Receives a pre-filled array of addresses (one batch) and issues a TLB shootdown request.
+ *
+ * @param app_id The application ID.
+ * @param page_batch A fixed-size array containing the virtual addresses to be flushed.
+ * The caller (e.g., move_pages) is responsible for ensuring this array
+ * is correctly padded (filled with 0s if not full).
+ * @return core_id_t The ID of the core that issued this request.
+ */
+core_id_t MimicOS::flushTLB(int app_id, array<IntPtr, TLB_SHOOT_DOWN_SIZE> page_batch)
+{
+    CoreManager *core_manager = Sim()->getCoreManager();
+    UInt32 total_cores = Sim()->getConfig()->getTotalCores();
 
-    for (UInt32 core_id : ret) {
-        std::cout << core_id << " ";
+    // Randomly select one core to issue the TLB shootdown
+    core_id_t issuer_core_id = (rand() % total_cores);
+    Core* issuer_core = core_manager->getCoreFromID(issuer_core_id);
+
+    // Assume page_batch has been prepared (padded) by move_pages
+    // Send this batch of TLB Shootdown requests
+    issuer_core->enqueueTLBShootdownRequest(page_batch, issuer_core_id, app_id);
+
+    return issuer_core_id;
+}
+
+/**
+ * @brief (Modified) Migrates a batch of pages, handling batching internally
+ * according to TLB_SHOOT_DOWN_SIZE.
+ *
+ * @param src_pages_queue Queue containing pointers to the source pages to be migrated.
+ * @param migrate_up_queue Queue containing the migration direction for each corresponding source page
+ * (true=up, false=down). This queue MUST be the same size as src_pages_queue.
+ * @param app_id The application ID.
+ * @return true if all pages were successfully migrated, false otherwise.
+ */
+bool MimicOS::move_pages(std::queue<Hemem::hemem_page*> src_pages_queue,
+                         std::queue<bool> migrate_up_queue,
+                         int app_id)
+{
+    cout << __func__ << " start : 0x" << src_pages_queue.front()->vaddr << endl;
+    HememAllocator* allocator = dynamic_cast<HememAllocator*>(getMemoryAllocator());
+    if (!allocator) {
+        std::cerr << "[MimicOS] Error: HememAllocator not found." << std::endl;
+        return false;
     }
 
-    std::cout << " ]" << std::dec << std::endl;
+    ParametricDramDirectoryMSI::PageTable* pt = getPageTable(app_id);
+    if (!pt) {
+        std::cerr << "[MimicOS] Error: PageTable not found for app_id " << app_id << std::endl;
+        return false;
+    }
+
+    // --- Robustness Check ---
+    assert(src_pages_queue.size() == migrate_up_queue.size() && "Source pages and migration directions queue sizes must match!");
+
+    bool all_succeeded = true;
+    core_id_t issuer_core_id = 0; // Will be set by the first flushTLB call
+
+    // --- Batch containers (for remapping logic) ---
+    std::queue<Hemem::hemem_page*> batch_pages_to_migrate; // Stores source pages (for steps 4/5/6)
+    std::queue<Hemem::hemem_page*> batch_dst_pages_alloced;  // Stores allocated destination pages (for steps 4/5/6)
+    std::queue<bool> batch_directions_for_migration; // Stores directions (for steps 4/5/6)
+
+    // --- Arrays for flushTLB and DMA_map ---
+    std::array<IntPtr, TLB_SHOOT_DOWN_SIZE> batch_vaddrs_array{};
+    std::array<IntPtr, TLB_SHOOT_DOWN_SIZE> batch_new_phy_addrs_array{};
+    int batch_count = 0;
+
+    // --- Step 1: Iterate, allocate, and process in batches ---
+    while (!src_pages_queue.empty())
+    {
+        Hemem::hemem_page* src_page = src_pages_queue.front();
+        bool current_migrate_up = migrate_up_queue.front();
+        src_pages_queue.pop();
+        migrate_up_queue.pop();
+
+        if (!src_page || src_page->vaddr == 0) {
+             all_succeeded = false;
+             continue; // Skip invalid source pages
+        }
+
+        // --- Step 1a: Pre-allocate destination page ---
+        Hemem::hemem_page* dst_page = allocator->getAFreePage(current_migrate_up);
+
+        if (dst_page == nullptr) {
+            std::cout << "[MimicOS] No free page in " << (current_migrate_up ? "DRAM" : "NVM")
+                      << " for migration. Page 0x" << std::hex << src_page->vaddr << " failed." << std::endl;
+            all_succeeded = false;
+        } else {
+            // Add to batch queues (for steps 4/5/6)
+            batch_pages_to_migrate.push(src_page);
+            batch_dst_pages_alloced.push(dst_page);
+            batch_directions_for_migration.push(current_migrate_up);
+
+            // Fill info into arrays (for steps 2, 3, 7)
+            batch_vaddrs_array[batch_count] = src_page->vaddr;
+            batch_new_phy_addrs_array[batch_count] = dst_page->phy_addr; // This is the new physical address the vaddr will use
+            batch_count++;
+        }
+
+        // --- Step 1b: Process the batch if it's full OR it's the last page ---
+        if ( (batch_count == TLB_SHOOT_DOWN_SIZE) || (src_pages_queue.empty() && batch_count > 0) )
+        {
+            // --- Padding ---
+            IntPtr batch_key = batch_vaddrs_array[0]; // Use the first vaddr in the batch as the map key
+
+            if (batch_count < TLB_SHOOT_DOWN_SIZE) {
+                // If this is the last batch and it's not full, pad with 0s
+                for (int i = batch_count; i < TLB_SHOOT_DOWN_SIZE; ++i) {
+                    batch_vaddrs_array[i] = 0; // Mark as invalid
+                    batch_new_phy_addrs_array[i] = 0; // Mark as invalid
+                }
+            }
+
+            // --- Step 2: Mark all PTEs as "migrating" (Invalidate PTE) ---
+            for (int i = 0; i < batch_count; ++i) {
+                // (We only mark the actually valid addresses)
+                // cout << "set page_moving : 0x" << hex << batch_vaddrs_array[i] << endl;
+                pt->page_moving(batch_vaddrs_array[i]);
+            }
+
+            // --- Step 3: Flush Cache & TLB (Flush Cache & TLB Shootdown) [Blocking] ---
+            // Pass the pre-filled array directly
+            // cout << "flush tlb : 0x" << batch_vaddrs_array[0] << endl;
+            issuer_core_id = flushTLB(app_id, batch_vaddrs_array);
+
+            // --- At this point, TLBs for this batch are clean ---
+
+            // --- Steps 4, 5, 6: Swap Metadata (Remap), Free Old Frames in page allocator---
+            while (!batch_pages_to_migrate.empty()) {
+                Hemem::hemem_page* src_page_batch = batch_pages_to_migrate.front();
+                Hemem::hemem_page* dst_page_batch = batch_dst_pages_alloced.front();
+                bool current_migrate_up_batch = batch_directions_for_migration.front();
+                batch_pages_to_migrate.pop();
+                batch_dst_pages_alloced.pop();
+                batch_directions_for_migration.pop();
+
+                // --- Step 4: Swap Physical Addresses & Metadata (Remap) ---
+                // cout << "exchange phy_addr : 0x" << src_page_batch->phy_addr << " to 0x" << dst_page_batch->phy_addr << endl;
+                UInt64 temp_phy_addr = src_page_batch->phy_addr;
+                src_page_batch->phy_addr = dst_page_batch->phy_addr; // vaddr gets the new paddr
+                dst_page_batch->phy_addr = temp_phy_addr;            // old paddr is transferred to the dst_page struct
+
+                src_page_batch->in_dram = current_migrate_up_batch;
+
+                // --- Step 5: Free the old physical page frame (now tied to dst_page struct) ---
+                dst_page_batch->vaddr = 0;
+                dst_page_batch->present = false;
+                // cout << "release page : 0x" << dst_page_batch->phy_addr << endl;
+                allocator->deallocate(dst_page_batch, !current_migrate_up_batch, 0); // Return to the *source* tier's free list
+            }
+
+            // --- Step 7: Record in DMA_map ---
+            DMA_map[batch_key] = std::make_pair(batch_vaddrs_array, batch_new_phy_addrs_array);
+
+            // --- Reset counter for the next batch ---
+            batch_count = 0;
+            // Queues (batch_pages_to_migrate, etc.) were cleared in steps 4/5/6
+            // Arrays (batch_vaddrs_array, etc.) will be overwritten in the next iteration
+        }
+    } // End while(!src_pages_queue.empty())
+    // cout << __func__ << "end " << endl;
+    return all_succeeded;
+}
+
+void MimicOS::DMA_migrate(IntPtr move_id, subsecond_time_t finish_time, int app_id) {
+
+    // 1. Find the batch in the map
+    auto it = DMA_map.find(move_id);
+
+    // 2. Ensure the batch was found
+    if (it == DMA_map.end()) {
+        // Not found, just return
+        return;
+    }
+
+    // 3. Get the Page Table
+    ParametricDramDirectoryMSI::PageTable* pt = getPageTable(app_id);
+
+    // 4. Get both address arrays from the map (virtual and new physical)
+    const auto& vaddrs_array = it->second.first;
+    const auto& new_phy_addrs_array = it->second.second;
+
+    // 5. Iterate over all pages in the batch
+    for (int i = 0; i < TLB_SHOOT_DOWN_SIZE; ++i) {
+
+        IntPtr vaddr = vaddrs_array[i];
+
+        // If vaddr is 0, it's a padding entry, so the batch is done
+        if (vaddr == 0) {
+            break;
+        }
+
+        // Get the corresponding new physical address
+        IntPtr new_paddr = new_phy_addrs_array[i];
+
+        // 6. Update the Page Table (PTE), pointing the vaddr to the new_paddr
+        pt->DMA_move_page(vaddr, finish_time);
+    }
+
+    // 7. Processing is complete, remove this entry from the map
+    DMA_map.erase(it);
 }
 
 
 void MimicOS::handle_page_fault(IntPtr address, IntPtr core_id, int frames)
 {
+    // todo: app_id = 0 only support multi-threaded simulation
+    ParametricDramDirectoryMSI::PageTable *pt = getPageTable(0);
+    std::unique_lock<std::shared_mutex> write_mutex(pt->get_lock_for_page(address));
+    if (pt->check_page_exist(address)) {
+        // cout << "PTE of 0x" << address << " has been created" << endl;
+        return;
+    }
     page_fault_handler->handlePageFault(address, core_id, frames);
 }
 

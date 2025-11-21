@@ -354,7 +354,7 @@ namespace ParametricDramDirectoryMSI
 			visited_pts.erase(std::unique(visited_pts.begin(), visited_pts.end()), visited_pts.end());
 
 
-			ptw_result = make_tuple(get<0>(ptw_result), visited_pts, get<2>(ptw_result), get<3>(ptw_result), get<4>(ptw_result));
+			ptw_result = make_tuple(get<0>(ptw_result), visited_pts, get<2>(ptw_result), get<3>(ptw_result), get<4>(ptw_result), get<5> (ptw_result), get<6>(ptw_result));
 
 			// Filter the PTW result based on the page table type
 			// This filtering is necessary to remove any redundant accesses that may hit in the PWC
@@ -372,13 +372,32 @@ namespace ParametricDramDirectoryMSI
 				log_file_mmu << "[MMU_BASE] Address: " << get<2>(visited_pts[i]) << " Level: " << get<1>(visited_pts[i]) << " Table: " << get<0>(visited_pts[i]) << " Correct Translation: " << get<3>(visited_pts[i]) << std::endl;
 			}
 #endif
-
+			bool pf_cause_by_moving = false;
 			int page_size = get<0>(ptw_result);
 			IntPtr ppn_result = get<2>(ptw_result);
 			bool is_pagefault = get<4>(ptw_result);
-
+			pageFaultType pfReason = get<5>(ptw_result);
+			PTWResult retry_result = ptw_result;
+			if (is_pagefault && pfReason == PF_MOVING) {
+				pf_cause_by_moving = true;
+				while (pfReason == PF_MOVING) {
+					// spin here
+					// todo: reduce page fault number
+					getCore()->processTLBShootdownBuffer(false);
+					retry_result = page_table->initializeWalk(address, count, is_prefetch, restart_walk);
+					pfReason = get<5>(retry_result);
+				}
+				is_pagefault = false;
+			}
 			
 			SubsecondTime ptw_cycles = calculatePTWCycles(ptw_result, count, modeled, eip, lock);
+
+			SubsecondTime t_last_DMA_finish = get<6>(retry_result);
+			SubsecondTime t_now = getCore()->getPerformanceModel()->getElapsedTime();
+			if (t_now < t_last_DMA_finish) {
+				// todo: stat infomation of wait time
+				shmem_perf_model->setElapsedTime(ShmemPerfModel::_USER_THREAD, t_last_DMA_finish);
+			}
 			
 		#ifdef DEBUG_MMU
 			log_file_mmu << "[MMU_BASE] Finished PTW for address: " << address << std::endl;

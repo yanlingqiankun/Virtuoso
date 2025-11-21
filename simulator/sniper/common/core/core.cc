@@ -19,6 +19,10 @@
 
 #include <cstring>
 
+#include "fastforward_performance_model.h"
+#include "mimicos.h"
+#include "pthread_emu.h"
+
 #if 0
    extern Lock iolock;
 #  define MYLOG(...) { ScopedLock l(iolock); fflush(stderr); fprintf(stderr, "[%8lu] %dcor %-25s@%03u: ", getPerformanceModel()->getCycleCount(ShmemPerfModel::_USER_THREAD), m_core_id, __FUNCTION__, __LINE__); fprintf(stderr, __VA_ARGS__); fprintf(stderr, "\n"); fflush(stderr); }
@@ -80,6 +84,7 @@ Core::Core(SInt32 id)
    , m_instructions_callback(UINT64_MAX)
    , m_instructions_hpi_callback(0)
    , m_instructions_hpi_last(0)
+   , m_shmem_perf(new ShmemPerf())
 {
    LOG_PRINT("Core ctor for: %d", id);
 
@@ -282,7 +287,7 @@ Core::initiateMemoryAccess(MemComponent::component_t mem_component,
       SubsecondTime now)
 {
    MYLOG("access %lx+%u %c%c modeled(%s)", address, data_size, mem_op_type == Core::WRITE ? 'W' : 'R', mem_op_type == Core::READ_EX ? 'X' : ' ', ModeledString(modeled));
-
+   processTLBShootdownBuffer(false);
    if (data_size <= 0)
    {
       return makeMemoryResult((HitWhere::where_t)mem_component,SubsecondTime::Zero());
@@ -593,4 +598,317 @@ int Core::CoreFlushTLB(int appid, IntPtr address)
       return getId();
    }
    return -1;
+}
+
+
+void Core::handleMsgFromOtherCore(core_id_t sender, PrL1PrL2DramDirectoryMSI::ShmemMsg *shmem_msg) {
+      // Sender of Broadcast message is master core
+
+      PrL1PrL2DramDirectoryMSI::ShmemMsg::msg_t shmem_msg_type = shmem_msg->getMsgType();
+      SubsecondTime msg_time = getShmemPerfModel()->getElapsedTime(ShmemPerfModel::_SIM_THREAD);
+
+      // These messages are intended for the Core, not the MemoryManager.
+      // We dispatch them to the Core's network handling functions.
+      switch(shmem_msg_type)
+      {
+         case PrL1PrL2DramDirectoryMSI::ShmemMsg::TLB_SHOOTDOWN_REQ:
+            networkHandleTLBShootdownRequest(shmem_msg);
+            break;
+
+         case PrL1PrL2DramDirectoryMSI::ShmemMsg::TLB_SHOOTDOWN_ACK:
+            networkHandleTLBShootdownAck(shmem_msg);
+            break;
+
+         default:
+            LOG_PRINT_ERROR("Unrecognized Shmem Msg Type(%u) for receiver MemComponent::CORE",
+                            shmem_msg->getMsgType());
+            break;
+      }
+
+}
+
+/**
+ * @brief ( networkHandleTLBShootdownRequest )
+ * Handles an incoming TLB_SHOOTDOWN_REQ message from the network and put request into queue.
+ * [Runs on _SIM_THREAD]
+ * Called by Core::handleMsgFromOtherCore (which is called by the CoreNetworkCallback)
+ */
+void Core::networkHandleTLBShootdownRequest(PrL1PrL2DramDirectoryMSI::ShmemMsg *shmem_msg)
+{
+    // Ignore our own broadcast
+    if (shmem_msg->getRequester() == m_core_id) {
+        return;
+    }
+
+      SubsecondTime msg_time = getShmemPerfModel()->getElapsedTime(ShmemPerfModel::_SIM_THREAD);
+      getShmemPerfModel()->updateElapsedTime(msg_time, ShmemPerfModel::_USER_THREAD);
+
+    auto* payload = reinterpret_cast<TLBShootdownRequestPayload *>(shmem_msg->getDataBuf());
+    enqueueTLBShootdownRequest(
+       payload->addrs,
+       shmem_msg->getRequester(),
+       payload->app_id
+       );
+}
+
+/**
+ * @brief ( networkHandleTLBShootdownAck )
+ * Handles an incoming TLB_SHOOTDOWN_ACK message from the network.
+ * [Runs on _SIM_THREAD]
+ * Called by Core::handleMsgFromOtherCore (which is called by the CoreNetworkCallback)
+ */
+void Core::networkHandleTLBShootdownAck(PrL1PrL2DramDirectoryMSI::ShmemMsg *shmem_msg)
+{
+      auto* payload = reinterpret_cast<TLBShootdownAckPayload *>(shmem_msg->getDataBuf());
+      IntPtr request_id = shmem_msg->getAddress();
+      core_id_t from_core = shmem_msg->getRequester();
+      SubsecondTime msg_time = getShmemPerfModel()->getElapsedTime(ShmemPerfModel::_SIM_THREAD);;
+
+      Semaphore* sem_to_signal = nullptr;
+      cout << "core " << getId() << " dealing reply of 0x" << request_id << endl;
+
+      {
+         ScopedLock sl(m_pending_shootdowns_lock);
+
+         // 1. Synchronize time
+         getShmemPerfModel()->updateElapsedTime(msg_time, ShmemPerfModel::_USER_THREAD);
+
+         auto it = m_pending_shootdowns.find(request_id);
+         if (it != m_pending_shootdowns.end()) {
+
+            if (it->second.pending_cores.count(from_core)) {
+
+               // 2. Remove this core from the pending list
+               it->second.pending_cores.erase(from_core);
+
+               // 3. Get the specific semaphore to signal
+               // sem_to_signal = it->second.sem;
+            }
+            // else: Duplicate ACK, ignore it.
+         }
+         // else: Record already cleaned up (should not happen if wait_sem is used)
+      } // Lock is released here
+
+      // 4. Signal the specific semaphore *outside* of the lock
+      // if (sem_to_signal) {
+      //    sem_to_signal->signal(); // wakeup _USER_THREAD
+      // }
+      cout << "core " << getId() <<" recieved reply of 0x" << request_id << endl;
+}
+
+/**
+ * @brief ( enqueue ) Adds a TLB Shootdown request to the local core's processing buffer.
+ *
+ * This function is thread-safe.
+ * It can be called by the local OS thread (to initiate a broadcast)
+ * or by the network thread (in response to a broadcast).
+ */
+void Core::enqueueTLBShootdownRequest(std::array<IntPtr, TLB_SHOOT_DOWN_SIZE> &pages_array, core_id_t init_id, int app_id)
+{
+    ScopedLock sl(m_tlb_shootdown_buffer_lock);
+
+    TLBShootdownRequest request; // Created on the stack, fixes memory leak
+    request.addrs = pages_array;
+    request.app_id = app_id;
+    request.initiator_core_id = init_id;
+    request.timestamp = getPerformanceModel()->getElapsedTime();
+    request.id = pages_array.front(); // Use the first page address as a unique ID
+
+    m_tlb_shootdown_buffer.push(request);
+}
+
+/**
+ * @brief ( process - part 1 ) Processes all requests in the buffer in a loop.
+ *
+ * This function should be called periodically by the core's main simulation loop.
+ */
+void Core::processTLBShootdownBuffer(bool processing_remote_only)
+{
+      size_t batch_size = 0;
+      {
+         ScopedLock sl(m_tlb_shootdown_buffer_lock);
+         batch_size = m_tlb_shootdown_buffer.size();
+      }
+      for (size_t i = 0; i < batch_size; ++i) {
+         TLBShootdownRequest request;
+         bool is_mine = false;
+         bool should_process = true;
+
+         {
+            ScopedLock sl(m_tlb_shootdown_buffer_lock);
+            if (m_tlb_shootdown_buffer.empty())
+               break;
+
+            request = m_tlb_shootdown_buffer.front();
+            m_tlb_shootdown_buffer.pop();
+
+            is_mine = (request.initiator_core_id == m_core_id);
+
+            if (is_mine && processing_remote_only) {
+               m_tlb_shootdown_buffer.push(request);
+               should_process = false;
+            }
+         }
+
+
+         if (should_process) {
+            if (is_mine) {
+               initiateTLBShootdownBroadcast(request);
+            } else {
+               handleRemoteTLBShootdownRequest(request);
+            }
+         }
+      }
+
+   // while (true) {
+   //    TLBShootdownRequest request;
+   //    {
+   //       ScopedLock sl(m_tlb_shootdown_buffer_lock);
+   //       if (m_tlb_shootdown_buffer.empty())
+   //          break;
+   //       request = m_tlb_shootdown_buffer.front();
+   //       m_tlb_shootdown_buffer.pop();
+   //    }
+   //
+   //    // Only process requests initiated by this core
+   //    if (request.initiator_core_id == m_core_id) {
+   //       initiateTLBShootdownBroadcast(request);
+   //    } else {
+   //       handleRemoteTLBShootdownRequest(request);
+   //    }
+   // }
+}
+
+void Core::handleRemoteTLBShootdownRequest(TLBShootdownRequest &request)
+{
+      cout << "core "<< getId() << " dealing TLB shootdown request = 0x" << request.addrs.at(0) << endl;
+   std::array<bool, TLB_SHOOT_DOWN_SIZE> flush_result{};
+
+   // 1. get m_mem_lock
+   {
+      // ScopedLock sl(m_mem_lock);
+
+      // 1a. local TLB flush
+      for(int i = 0; i < TLB_SHOOT_DOWN_SIZE; i++) {
+         IntPtr addr = request.addrs.at(i);
+         bool flushed = m_memory_manager->MMFlushTLB(request.app_id, addr, NONE, MEM_MODELED_NONE);
+         flush_result.at(i) = flushed;
+      }
+
+      // 1b.  _USER_THREAD += ipi_handle_latency
+      getPerformanceModel()->getFastforwardPerformanceModel()->incrementElapsedTime(ipi_handle_latency);
+
+   } // m_mem_lock release
+
+   // 2. Response TLB Shootdown ACK
+   TLBShootdownAckPayload ack_payload{};
+   ack_payload.request_id = request.id;
+   ack_payload.flush_result = flush_result;
+      cout << "core "<< getId() << " send TLB shootdown reply = 0x" << request.addrs.at(0) << endl;
+   getMemoryManager()->sendMsg(
+       PrL1PrL2DramDirectoryMSI::ShmemMsg::TLB_SHOOTDOWN_ACK,
+       MemComponent::CORE, MemComponent::CORE,
+       m_core_id, // Requester (of the ACK)
+       request.initiator_core_id, // Receiver (the original initiator)
+       request.id,
+       reinterpret_cast<Byte *>(&ack_payload), sizeof(ack_payload),
+       HitWhere::UNKNOWN, m_shmem_perf,
+       ShmemPerfModel::_USER_THREAD, // send in _USER_THREAD
+       CacheBlockInfo::block_type_t::TLB_ENTRY
+   );
+}
+
+/**
+ * @brief ( process - part 3 ) Logic for the initiator to broadcast and wait.
+ */
+void Core::initiateTLBShootdownBroadcast(TLBShootdownRequest &request)
+{
+      // 1.Flush local cache
+       for (int i = 0; i < TLB_SHOOT_DOWN_SIZE; i++) {
+          getMemoryManager()->flushCachePage(request.addrs.at(i), MemComponent::L1_DCACHE);
+       }
+       auto *wait_sem = new Semaphore(0); // 1. Create a semaphore with initial value 0
+       int num_to_wait_for = 0;
+
+       // 2. Create pending shootdown record
+       {
+           ScopedLock sl(m_pending_shootdowns_lock);
+           getPerformanceModel()->getFastforwardPerformanceModel()->incrementElapsedTime(ipi_initiate_latency);
+
+           PendingShootdown pending;
+           pending.max_end_time = getPerformanceModel()->getElapsedTime();
+           pending.address = request.id;
+
+           // Add all other cores to the pending list
+           for (core_id_t core_id = 0; core_id < Sim()->getConfig()->getApplicationCores(); core_id++) {
+               if (core_id != m_core_id) {
+                   pending.pending_cores.insert(core_id);
+               }
+           }
+
+          pending.sem = wait_sem; // Store the semaphore in the record
+          num_to_wait_for = pending.pending_cores.size(); // Record how many ACKs to wait for
+
+          m_pending_shootdowns[request.id] = pending;
+       }
+
+
+       // 3. Send shootdown request to all other cores (via "direct function call")
+      cout << "core "<< getId() << " broadcast tlb flush request = 0x" <<request.addrs.at(0) << endl;
+      if (num_to_wait_for > 0) {
+         TLBShootdownRequestPayload payload{};
+         payload.app_id = request.app_id;
+         payload.request_id = request.id;
+         payload.addrs = request.addrs;
+         getMemoryManager()->broadcastMsg(
+            PrL1PrL2DramDirectoryMSI::ShmemMsg::TLB_SHOOTDOWN_REQ,
+            MemComponent::CORE, MemComponent::CORE,
+            m_core_id,              // Requester
+            request.id,             // Address (request id)
+            reinterpret_cast<Byte *>(&payload), sizeof(payload),
+            m_shmem_perf,
+            ShmemPerfModel::_USER_THREAD);
+      }
+
+       // 4. Perform local TLB flush
+       for(int i = 0; i < TLB_SHOOT_DOWN_SIZE; ++i) {
+           IntPtr addr = request.addrs.at(i);
+           m_memory_manager->MMFlushTLB(request.app_id, addr, NONE, MEM_MODELED_NONE);
+       }
+       // Account for local flush latency
+       getPerformanceModel()->getFastforwardPerformanceModel()->incrementElapsedTime(ipi_handle_latency);
+
+      cout << "core "<< getId() << " waiting reply for request = 0x" << request.addrs.at(0) << endl;
+      // todo: update time from other core
+      if (num_to_wait_for) {
+         while (true) {
+            // _USER_THREAD sleep here
+            // wait_sem->wait();
+            processTLBShootdownBuffer(true);
+            bool done = false;
+            {
+               ScopedLock sl(m_pending_shootdowns_lock);
+               auto it = m_pending_shootdowns.find(request.id);
+               if (it != m_pending_shootdowns.end()) {
+                  if (it->second.pending_cores.empty()) {
+                     done = true;
+                  }
+               } else {
+                  done = true;
+               }
+            }
+            if (done) {
+               break;
+            }
+         }
+      }
+
+      delete wait_sem;
+       {
+          ScopedLock sl(m_pending_shootdowns_lock);
+          m_pending_shootdowns.erase(request.id); // Remove the record from the map
+       }
+
+      Sim()->getMimicOS()->DMA_migrate(request.id, getShmemPerfModel()->getElapsedTime(ShmemPerfModel::_USER_THREAD), request.app_id);
+
 }

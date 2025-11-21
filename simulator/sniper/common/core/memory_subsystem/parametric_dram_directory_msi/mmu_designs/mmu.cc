@@ -637,7 +637,7 @@ namespace ParametricDramDirectoryMSI
 			}
 		}
 
-		return PTWResult(get<0>(ptw_result), ptw_accesses, get<2>(ptw_result), get<3>(ptw_result), get<4>(ptw_result));
+		return PTWResult(get<0>(ptw_result), ptw_accesses, get<2>(ptw_result), get<3>(ptw_result), get<4>(ptw_result), get<5>(ptw_result), get<6>(ptw_result));
 	}
 
 	void MemoryManagementUnit::setMaxPWCLevel(int max_pwc_level_)

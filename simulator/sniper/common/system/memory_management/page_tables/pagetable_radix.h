@@ -1,6 +1,7 @@
 
 #pragma once
 #include "pagetable.h"
+#include <shared_mutex>
 
 namespace ParametricDramDirectoryMSI
 {
@@ -10,11 +11,21 @@ namespace ParametricDramDirectoryMSI
 
 	private:
 		struct PTFrame;
+		std::vector<std::shared_mutex> m_page_locks;
+		static const int NUM_PAGE_LOCKS = 256;
+		enum page_permission {
+			READ_WRITE,
+			MOVING
+		};
 
 		struct PTE
 		{
 			bool valid; // Valid bit
 			IntPtr ppn; // Physical page number
+			page_permission permission;
+
+			// todo: init DMA_finish to 0
+			subsecond_time_t DMA_finish;
 		};
 
 		struct PTEntry
@@ -52,6 +63,7 @@ namespace ParametricDramDirectoryMSI
 			UInt64 page_faults;
 			UInt64 *page_size_discovery; // Number of times each page size is discovered
 			UInt64 allocated_frames;	 // Number of frames allocated for the page table
+			UInt64 page_faults_of_migration;
 		} stats;
 
 	public:
@@ -59,8 +71,12 @@ namespace ParametricDramDirectoryMSI
 		PTWResult initializeWalk(IntPtr address, bool count, bool is_prefetch = false, bool restart_walk = false);
 		int updatePageTableFrames(IntPtr address, IntPtr core_id, IntPtr ppn, int page_size, std::vector<UInt64> frames);
 		void deletePage(IntPtr address);
+		void page_moving(IntPtr address) override;
+		void DMA_move_page(IntPtr address, subsecond_time_t finish_time) override;
 		IntPtr getPhysicalSpace(int size);
 		String getType() { return "radix"; };
 		int getMaxLevel() { return levels; };
+		std::shared_mutex& get_lock_for_page(IntPtr address) override;
+		bool check_page_exist(IntPtr address) override;
 	};
 }

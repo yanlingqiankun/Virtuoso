@@ -7,6 +7,7 @@
 #include "config.hpp"
 #include "hemem_allocator.h"
 #include <iostream>
+#include <queue>
 
 #include "mimicos.h"
 
@@ -48,6 +49,8 @@ HememAllocator::HememAllocator(String name, UInt64 dram_size, UInt64 nvm_size, i
 
     std::cout << "[Hemem] pages in DRAM : " << dram_free_list.numentries << std::endl;
     std::cout << "[Hemem] pages in NVM : " << nvm_free_list.numentries << std::endl;
+    this->dram_reserved_threshold = dram_free_list.numentries / 10;
+    std::cout << "[Hemem] Reserved DRAM pages for migration: " << this->dram_reserved_threshold << std::endl;
 }
 
 HememAllocator::~HememAllocator() {
@@ -62,7 +65,10 @@ std::pair<UInt64,UInt64> HememAllocator::allocate(UInt64 bytes, UInt64 address, 
     } else {
         // std::cout << "[BUDDY] page addr = 0x" << std::hex << (address&(~((1<<12)-1))) << " addr = 0x" << address << std::endl;
         mutex_alloc.lock();
-        Hemem::hemem_page *page = Hemem::dequeue(&dram_free_list);
+        Hemem::hemem_page *page = nullptr;
+        if (dram_free_list.numentries > this->dram_reserved_threshold) {
+            page = Hemem::dequeue(&dram_free_list);
+        }
         if (page != nullptr) {
             assert(!page->present);
             page->present = true;
@@ -94,6 +100,28 @@ Hemem::hemem_page *HememAllocator::getAFreePage(bool is_dram) {
     return ret;
 }
 
+std::queue<Hemem::hemem_page*> HememAllocator::getFreePages(std::queue<bool> is_dram) {
+    std::queue<Hemem::hemem_page*> ret;
+    mutex_alloc.lock();
+    while (!is_dram.empty()) {
+        bool dram = is_dram.front();
+        is_dram.pop();
+        Hemem::hemem_page *page = nullptr;
+        if (dram) {
+            page = Hemem::dequeue(&dram_free_list);
+        } else {
+            page = Hemem::dequeue(&nvm_free_list);
+        }
+        if (page == nullptr) {
+            // Free list empty, stop here
+            break;
+        }
+        ret.push(page);
+    }
+    mutex_alloc.unlock();
+    return ret;
+}
+
 void HememAllocator::deallocate(UInt64 region_begin, UInt64 core_id)
 {
 }
@@ -104,6 +132,23 @@ void HememAllocator::deallocate(Hemem::hemem_page *page, bool is_dram, UInt64 co
     } else {
         Hemem::enqueue(&nvm_free_list, page);
     }
+}
+
+void HememAllocator::deallocatePages(std::queue<Hemem::hemem_page*> pages, std::queue<bool> is_dram, UInt64 app_id) {
+    mutex_alloc.lock();
+    while (!pages.empty() && !is_dram.empty()) {
+        Hemem::hemem_page *page = pages.front();
+        pages.pop();
+        bool dram = is_dram.front();
+        is_dram.pop();
+        if (!dram) {
+            Hemem::enqueue(&dram_free_list, page);
+        } else {
+            Hemem::enqueue(&nvm_free_list, page);
+        }
+    }
+    mutex_alloc.unlock();
+
 }
 
 std::vector<Range> HememAllocator::allocate_ranges(IntPtr start_va, IntPtr end_va, int app_id)

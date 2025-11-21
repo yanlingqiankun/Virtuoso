@@ -369,7 +369,7 @@ namespace ParametricDramDirectoryMSI
             if (restart_walk_after_fault)
                 goto restart_walk;
             else
-                return PTWResult(page_size_result, visited_addresses, ppn_result, SubsecondTime::Zero(), total_page_fault);
+                return PTWResult(page_size_result, visited_addresses, ppn_result, SubsecondTime::Zero(), total_page_fault, PF_DUMMY, SubsecondTime::Zero());
         }
 
 #ifdef DEBUG
@@ -379,7 +379,7 @@ namespace ParametricDramDirectoryMSI
 #endif
 
         // Return results: (page_size_found, visited_entries, final PPN, latency=Zero, page_fault?)
-        return PTWResult(page_size_result, visited_addresses, ppn_result, SubsecondTime::Zero(), total_page_fault);
+        return PTWResult(page_size_result, visited_addresses, ppn_result, SubsecondTime::Zero(), total_page_fault, PF_DUMMY, SubsecondTime::Zero());
     }
 
     /*

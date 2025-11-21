@@ -207,6 +207,7 @@ namespace ParametricDramDirectoryMSI
 		visited_addresses.reserve(50); // Reserving space for optimization, not mandatory
 
 		bool is_pagefault_in_every_page_size = false;
+		SubsecondTime dummy_time = SubsecondTime::Zero();
 
 		// Increment the page_table_walks stat for each page size if counting
 		for (int i = 0; i < m_page_sizes; i++)
@@ -342,12 +343,12 @@ namespace ParametricDramDirectoryMSI
 			if (restart_walk_after_fault)
 				goto restart_walk;
 			else
-				return PTWResult(page_size_result, visited_addresses, ppn, SubsecondTime::Zero(), is_pagefault_in_every_page_size);
+				return PTWResult(page_size_result, visited_addresses, ppn, SubsecondTime::Zero(), is_pagefault_in_every_page_size, PF_DUMMY, dummy_time);
 		}
 
 		if (page_size_result != -1)
 		{
-			return PTWResult(page_size_result, visited_addresses, ppn, SubsecondTime::Zero(), is_pagefault_in_every_page_size);
+			return PTWResult(page_size_result, visited_addresses, ppn, SubsecondTime::Zero(), is_pagefault_in_every_page_size, PF_DUMMY, dummy_time);
 		}
 
 		// If we somehow get here, there's a logical inconsistency

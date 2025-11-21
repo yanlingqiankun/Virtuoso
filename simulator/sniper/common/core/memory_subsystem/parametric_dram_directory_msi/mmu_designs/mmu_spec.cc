@@ -593,7 +593,7 @@ namespace ParametricDramDirectoryMSI
             }
         }
 
-        return PTWResult(get<0>(ptw_result), ptw_accesses, get<2>(ptw_result), get<3>(ptw_result), get<4>(ptw_result));
+        return PTWResult(get<0>(ptw_result), ptw_accesses, get<2>(ptw_result), get<3>(ptw_result), get<4>(ptw_result), get<5>(ptw_result), get<6>(ptw_result));
     }
 
     /*
@@ -656,7 +656,7 @@ namespace ParametricDramDirectoryMSI
             spec_engine->invokeSpecEngine(address, count, lock, eip, modeled, time_for_pt, physical_result_last_level, true);
         /*Spec code end*/
 
-        ptw_result = make_tuple(get<0>(ptw_result), visited_pts, get<2>(ptw_result), get<3>(ptw_result), get<4>(ptw_result));
+        ptw_result = make_tuple(get<0>(ptw_result), visited_pts, get<2>(ptw_result), get<3>(ptw_result), get<4>(ptw_result), get<5>(ptw_result), get<6>(ptw_result));
 
         // Filter the PTW result based on the page table type
         // This filtering is necessary to remove any redundant accesses that may hit in the PWC

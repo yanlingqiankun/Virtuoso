@@ -106,6 +106,11 @@ thread_id_t TraceManager::newThread(app_id_t app_id, bool first, bool init_fifo,
    // For virtualized environments:
    // Create one App Instance for the application in the VM
 
+    // Choosing an inaccurate way to simulate multiple threads
+    if (Sim()->getCfg()->hasKey("perf_model/migration_enable")) {
+        app_id = 0;
+    }
+
    if (Sim()->isVirtualizedSystem() == true) {
       app_id_t vm_id = 0;
       Sim()->getMimicOS()->createApplication(vm_id);

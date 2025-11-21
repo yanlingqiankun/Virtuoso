@@ -4,11 +4,15 @@
 #include "physical_memory_allocator.h"
 #include "mimicos.h"
 
-//#define DEBUG
-
+// #define DEBUG
+// #define SAMPLE_DEBUG
 namespace ParametricDramDirectoryMSI
 {
 
+	std::shared_mutex &PageTableRadix::get_lock_for_page(IntPtr address) {
+		IntPtr page_number = address >> 12; // For 4KB pages
+		return m_page_locks[page_number % NUM_PAGE_LOCKS];
+	}
 	/**
 	 * @brief Constructor for the PageTableRadix class.
 	 *
@@ -25,7 +29,8 @@ namespace ParametricDramDirectoryMSI
 	PageTableRadix::PageTableRadix(int core_id, String name, String type, int page_sizes, int *page_size_list, int levels, int frame_size, bool is_guest)
 		: PageTable(core_id, name, type, page_sizes, page_size_list, is_guest),
 		  m_frame_size(frame_size),
-		  levels(levels)
+		  levels(levels),
+          m_page_locks(NUM_PAGE_LOCKS)
 	{
 
 		log_file = std::ofstream();
@@ -90,6 +95,9 @@ namespace ParametricDramDirectoryMSI
 		log_file << "[RADIX] RADIX is coming.. with address " << address << std::endl;
 #endif
 
+#ifdef SAMPLE_DEBUG
+		log_file << "[RADIX] RADIX is coming.. with address " << address << std::endl;
+#endif
 		if (count)
 			stats.page_table_walks++;
 
@@ -111,6 +119,12 @@ namespace ParametricDramDirectoryMSI
 
 	restart_walk: // Get the 9 MSB of the address
 
+		bool fault_detected = false;
+		pageFaultType fault_type_result = PF_WITHOUT_FAULT;
+		std::shared_mutex &page_lock = get_lock_for_page(address);
+
+		std::shared_lock<std::shared_mutex> read_lock(page_lock);
+
 		IntPtr offset = (address >> 39) & 0x1FF;
 
 		// Start the walk from the root
@@ -128,6 +142,7 @@ namespace ParametricDramDirectoryMSI
 
 		int level = levels;
 		SubsecondTime pwc_latency = SubsecondTime::Zero();
+		SubsecondTime wait_latency = SubsecondTime::Zero();
 
 		while (level > 0)
 		{
@@ -147,20 +162,25 @@ namespace ParametricDramDirectoryMSI
 				// The entry is not valid, we need to handle a page fault
 				if (current_frame->entries[offset].data.translation.valid == false)
 				{
+					is_pagefault = true;
+					stats.page_faults++;
+					if (current_frame->entries[offset].data.translation.permission == MOVING) {
+						// This is a special page fault of moving page
+						stats.page_faults_of_migration++;
+						return PTWResult(page_size_result, visited_pts, ppn_result, pwc_latency, is_pagefault, PF_MOVING, current_frame->entries[offset].data.translation.DMA_finish);
+					}
+					read_lock.unlock();
 					if (restart_walk_after_fault)
 						os->handle_page_fault(address, core_id, getMaxLevel());
 
-					is_pagefault = true;
-
-					stats.page_faults++;
 #ifdef DEBUG
-					log_file << "[PAGE FAULT RESOLVED] for address: " << address << std::endl;
-					log_file << std::endl;
+						log_file << "[PAGE FAULT RESOLVED] for address: " << address << std::endl;
+						log_file << std::endl;
 #endif
 					if (restart_walk_after_fault)
 						goto restart_walk;
 					else
-						return PTWResult(page_size_result, visited_pts, ppn_result, pwc_latency, is_pagefault);
+						return PTWResult(page_size_result, visited_pts, ppn_result, pwc_latency, is_pagefault, PF_PTE_PRESENT, current_frame->entries[offset].data.translation.DMA_finish);
 				}
 				// We found the entry, we can return the result
 
@@ -172,6 +192,7 @@ namespace ParametricDramDirectoryMSI
 				// @kanellok: Be careful with the return values -> always return PPN_RESULT at page size granularity
 				ppn_result = current_frame->entries[offset].data.translation.ppn;
 				page_size_result = m_page_size_list[level - 1]; // If we hit at level 1 (last one), we return the page_size[1-1] = page_size[0] = 4KB
+				wait_latency = current_frame->entries[offset].data.translation.DMA_finish;
 				break;
 			}
 			else
@@ -186,6 +207,7 @@ namespace ParametricDramDirectoryMSI
 #ifdef DEBUG
 					log_file << "[RADIX] Next level is NULL, we need to allocate a new frame" << std::endl;
 #endif
+					read_lock.unlock();
 					if (restart_walk_after_fault)
 						os->handle_page_fault(address, core_id, getMaxLevel());
 
@@ -199,7 +221,7 @@ namespace ParametricDramDirectoryMSI
 					if (restart_walk_after_fault)
 						goto restart_walk;
 					else
-						return PTWResult(page_size_result, visited_pts, ppn_result, pwc_latency, is_pagefault);
+						return PTWResult(page_size_result, visited_pts, ppn_result, pwc_latency, is_pagefault, PF_PTE_PRESENT, current_frame->entries[offset].data.translation.DMA_finish);
 				}
 				else
 				{
@@ -220,7 +242,7 @@ namespace ParametricDramDirectoryMSI
 		log_file << "[RADIX] --------------------------------------------" << std::endl;
 #endif
 
-		return PTWResult(page_size_result, visited_pts, ppn_result, pwc_latency, is_pagefault);
+		return PTWResult(page_size_result, visited_pts, ppn_result, pwc_latency, is_pagefault, PF_WITHOUT_FAULT, wait_latency);
 	}
 
 	int PageTableRadix::updatePageTableFrames(IntPtr address, IntPtr core_id, IntPtr ppn, int page_size, std::vector<UInt64> frames)
@@ -330,6 +352,7 @@ namespace ParametricDramDirectoryMSI
 
 	void PageTableRadix::deletePage(IntPtr address)
 	{
+		std::unique_lock<std::shared_mutex> lock(get_lock_for_page(address));
 
 #ifdef DEBUG
 		log_file << "[RADIX] Deleting page that corresponds to address: " << address << std::endl;
@@ -362,6 +385,115 @@ namespace ParametricDramDirectoryMSI
 			counter++;
 		}
 	}
+
+	void PageTableRadix::page_moving(IntPtr address)
+	{
+		std::unique_lock<std::shared_mutex> lock(get_lock_for_page(address));
+#ifdef DEBUG
+		log_file << "[RADIX] Unmapping page that corresponds to address: " << address << std::endl;
+#endif
+		PTFrame *current_frame = root;
+		IntPtr offset = (address >> 39) & 0x1FF;
+
+		int level = levels;
+		int counter = 0;
+
+		while (level > 0)
+		{
+			offset = (address >> (48 - 9 * (levels - level + 1))) & 0x1FF;
+
+			if (current_frame->entries[offset].is_pte)
+			{
+#ifdef DEBUG
+				log_file << "[RADIX] Found the PTE for address: " << address << " at level: " << level << " with offset: " << offset << std::endl;
+#endif
+				// We don't change the PPN, as the physical page should be protect.
+				current_frame->entries[offset].data.translation.valid = false;
+
+				current_frame->entries[offset].data.translation.permission = MOVING;
+				break;
+			}
+			else
+			{
+				// Move to the next level of the page table
+				current_frame = current_frame->entries[offset].data.next_level;
+				if (current_frame == NULL) // Should not happen for an already mapped page
+					break;
+			}
+			level--;
+			counter++;
+		}
+	}
+
+
+	void PageTableRadix::DMA_move_page(IntPtr address, subsecond_time_t finish_time)
+	{
+		std::unique_lock<std::shared_mutex> lock(get_lock_for_page(address));
+		PTFrame *current_frame = root;
+		IntPtr offset = (address >> 39) & 0x1FF;
+
+		int level = levels;
+		int counter = 0;
+
+		while (level > 0)
+		{
+			offset = (address >> (48 - 9 * (levels - level + 1))) & 0x1FF;
+
+			if (current_frame->entries[offset].is_pte)
+			{
+				// We don't change the PPN, as the physical page should be protect.
+
+				current_frame->entries[offset].data.translation.DMA_finish = finish_time;
+				current_frame->entries[offset].data.translation.permission = READ_WRITE;
+				current_frame->entries[offset].data.translation.valid = true;
+				break;
+			}
+			else
+			{
+				// Move to the next level of the page table
+				current_frame = current_frame->entries[offset].data.next_level;
+				if (current_frame == NULL) // Should not happen for an already mapped page
+					break;
+			}
+			level--;
+			counter++;
+		}
+	}
+
+	bool PageTableRadix::check_page_exist(IntPtr address) {
+#ifdef DEBUG
+		log_file << "[RADIX] check if the page exist that corresponds to address: " << address << std::endl;
+#endif
+		PTFrame *current_frame = root;
+		IntPtr offset = (address >> 39) & 0x1FF;
+
+		int level = levels;
+		int counter = 0;
+
+		while (level > 0)
+		{
+			offset = (address >> (48 - 9 * (levels - level + 1))) & 0x1FF;
+
+			if (current_frame->entries[offset].is_pte)
+			{
+
+				if (current_frame->entries[offset].data.translation.valid == true)
+					return true;
+				else
+					return false;
+			}
+			else
+			{
+				// Move to the next level of the page table
+				current_frame = current_frame->entries[offset].data.next_level;
+				if (current_frame == NULL) // Should not happen for an already mapped page
+					return false;
+			}
+			level--;
+			counter++;
+		}
+	}
+
 
 	/**
 	 * @brief Allocates physical space for the page table.

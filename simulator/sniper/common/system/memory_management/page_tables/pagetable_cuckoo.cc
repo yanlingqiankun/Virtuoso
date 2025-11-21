@@ -650,7 +650,7 @@ namespace ParametricDramDirectoryMSI
 			if (restart_walk_after_fault)
 				goto restart_walk;
 			else
-				return PTWResult(page_size_result, visitedAddresses, ppn_result, SubsecondTime::Zero(), is_page_fault_in_every_page_size);
+				return PTWResult(page_size_result, visitedAddresses, ppn_result, SubsecondTime::Zero(), is_page_fault_in_every_page_size, PF_DUMMY, SubsecondTime::Zero());
 		}
 
 		// If we found a match in some page size
@@ -663,12 +663,12 @@ namespace ParametricDramDirectoryMSI
 			log_file << "[Cuckoo] PPN result: " << ppn_result << "\n";
 			log_file << "[Cuckoo] Was it a pagefault? " << is_page_fault_in_every_page_size << "\n";
 #endif
-			return PTWResult(page_size_result, visitedAddresses, ppn_result, SubsecondTime::Zero(), is_page_fault_in_every_page_size);
+			return PTWResult(page_size_result, visitedAddresses, ppn_result, SubsecondTime::Zero(), is_page_fault_in_every_page_size, PF_DUMMY, SubsecondTime::Zero());
 		}
 
 		// Should not reach here
 		assert(false);
-		return PTWResult(-1, visitedAddresses, -1, SubsecondTime::Zero(), is_page_fault_in_every_page_size);
+		return PTWResult(-1, visitedAddresses, -1, SubsecondTime::Zero(), is_page_fault_in_every_page_size, PF_DUMMY, SubsecondTime::Zero());
 	}
 
 	/*

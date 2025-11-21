@@ -8,11 +8,12 @@
 #include "page_fault_handler_base.h"
 #include "hemem_allocator.h"
 #include "hemem.h"
+#include <queue>
 
 #define PEBS_KSWAPD_INTERVAL      (100000) // in us (10ms)
 #define PEBS_KSWAPD_MIGRATE_RATE  (10UL * 1024UL * 1024UL * 1024UL) // 10GB
-#define HOT_READ_THRESHOLD        (2)
-#define HOT_WRITE_THRESHOLD       (2)
+#define HOT_READ_THRESHOLD        (1)
+#define HOT_WRITE_THRESHOLD       (1)
 #define PEBS_COOLING_THRESHOLD    (1)
 
 #define HOT_RING_REQS_THRESHOLD   (1024*1024)
@@ -246,28 +247,14 @@ namespace Hemem{
         return current;
     }
 
-    void page_migrate(hemem_page *src, hemem_page *dst, bool migrate_up) {
-        // std::cout << "[Hemem] page migrate from 0x" << std::hex << src->phy_addr << " to 0x" << dst->phy_addr << std::endl;
-        assert(dst->present == false);
-        std::cout << "[Hemem] move " << (migrate_up ? "↑" : "↓") << std::endl;
-        if (migrate_up) {
-            src->in_dram = true;
-        } else {
-            src->in_dram = false;
-        }
-        auto temp = src->phy_addr;
-        src->phy_addr = dst->phy_addr;
-        dst->phy_addr = temp;
-
-        dst->vaddr = 0;
-        dst->present = false;
-        for (int i = 0; i < NPBUFTYPES; ++i) {
-            dst->accesses[i] = 0;
-            dst->tot_accesses[i] = 0;
-        }
-
-        Sim()->getMimicOS()->flushTLB(0, src->vaddr);
-        return;
+    bool page_migrate(hemem_page *src, bool migrate_up, int app_id = 0) {
+        // The core logic of finding a new page, swapping, and updating page tables
+        // is now handled by the OS simulation (MimicOS).
+        std::queue<hemem_page*> pages;  pages.push(src);
+        std::queue<bool> migrate_ups;   migrate_ups.push(migrate_up);
+        std::cout << "[Hemem] 0x"<< std::hex << pages.front()->vaddr << " : " << (migrate_up ? "↑" : "↓") << std::endl;
+        bool success = Sim()->getMimicOS()->move_pages(pages, migrate_ups, app_id);
+        return success;
     }
 
     Hemem::Hemem(PageTracer *p)
@@ -425,39 +412,29 @@ namespace Hemem{
                     continue;
                 }
 
-                for (tries = 0; tries < 2; tries++) {
-                    // Try to find a free dram page here
-                    np = dynamic_cast<HememAllocator*>(Sim()->getMimicOS()->getPageFaultHandler()->getAllocator())->getAFreePage(true);
-                    if (np != nullptr) {
-                        assert(!np->present);
-                        // std::cout << "[Hemem] Promote page" << std::endl;
-                        page_migrate(p, np, true); // todo::migrate_up move p->np
-
-                        // std::cout << "[Hemem] inserted " << page->prev << " in " << __LINE__ <<std::endl;
-                        enqueue(&dram_hot_list, p);
-                        dynamic_cast<HememAllocator*>(Sim()->getMimicOS()->getPageFaultHandler()->getAllocator())->deallocate(np, false, 0);
-                        migrated_bytes += pt_to_pagesize(p->pt);
-                        break;
-                    }
-
+                // Try to promote the page. OS will handle finding a free page or swapping.
+                if (page_migrate(p, true, 0)) {
+                    enqueue(&dram_hot_list, p);
+                    migrated_bytes += pt_to_pagesize(p->pt);
+                } else {
+                    // Migration failed, maybe no free space. Try to make space.
                     // no free dram page, try to find a cold dram page to move down
                     cp = dequeue(&dram_cold_list);
                     if (cp == nullptr) {
                         // all dram pages are hot, so put it back in list we got it from
-                        // std::cout << "[Hemem] inserted " << page->prev << "in" << __LINE__ <<std::endl;
                         enqueue(&nvm_hot_list, p);
                         goto out;
                     }
-                    assert(cp != nullptr);
-
-                    np = dynamic_cast<HememAllocator*>(Sim()->getMimicOS()->getPageFaultHandler()->getAllocator())->getAFreePage(false);
-                    if (np != nullptr) {
-                        assert(!np->present);
-                        // std::cout << "[Hemem] Demote page" << std::endl;
-                        page_migrate(cp, np, false); // todo: move cp->np
-                        // std::cout << "[Hemem] inserted " << page->prev << " in " << __LINE__ <<std::endl;
+                    
+                    // Demote the cold page to NVM
+                    if (page_migrate(cp, false, 0)) {
                         enqueue(&nvm_cold_list, cp);
-                        dynamic_cast<HememAllocator*>(Sim()->getMimicOS()->getPageFaultHandler()->getAllocator())->deallocate(np, true, 0);
+                        // Now that a DRAM page is freed, put `p` back and retry in the next iteration.
+                        enqueue(&nvm_hot_list, p);
+                    } else {
+                        // Demotion also failed. Put both pages back.
+                        enqueue(&dram_cold_list, cp);
+                        enqueue(&nvm_hot_list, p);
                     }
                 }
             }

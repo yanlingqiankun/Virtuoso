@@ -23,6 +23,9 @@ namespace PrL1PrL2DramDirectoryMSI
             INV_REQ,
             FLUSH_REQ,
             WB_REQ,
+            // core -> core FLUSH TLB
+            TLB_SHOOTDOWN_REQ,
+            TLB_SHOOTDOWN_ACK,
             // Tag directory > cache
             EX_REP,
             SH_REP,

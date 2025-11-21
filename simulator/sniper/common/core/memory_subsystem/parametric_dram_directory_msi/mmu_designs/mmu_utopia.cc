@@ -1066,7 +1066,7 @@ namespace ParametricDramDirectoryMSI
 		}
 
 		// Return the same final PPN, page size, and walk stats, but updated with whichever addresses remain after PWC filtering.
-		return PTWResult(get<0>(ptw_result), ptw_accesses, get<2>(ptw_result), get<3>(ptw_result), get<4>(ptw_result));
+		return PTWResult(get<0>(ptw_result), ptw_accesses, get<2>(ptw_result), get<3>(ptw_result), get<4>(ptw_result), get<5>(ptw_result), get<6>(ptw_result));
 	}
 
 	/*

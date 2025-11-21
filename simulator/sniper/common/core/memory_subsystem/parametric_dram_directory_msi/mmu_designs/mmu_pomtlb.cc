@@ -822,7 +822,7 @@ namespace ParametricDramDirectoryMSI
 		}
 		// Return an updated PTWResult with the filtered addresses
 		return PTWResult(get<0>(ptw_result), ptw_accesses,
-		                 get<2>(ptw_result), get<3>(ptw_result), get<4>(ptw_result));
+		                 get<2>(ptw_result), get<3>(ptw_result), get<4>(ptw_result), get<5>(ptw_result), get<6>(ptw_result));
 	}
 
 	/*
