@@ -22,20 +22,22 @@ namespace ParametricDramDirectoryMSI
 		{
 			bool valid; // Valid bit
 			IntPtr ppn; // Physical page number
-			page_permission permission;
-
-			// todo: init DMA_finish to 0
-			subsecond_time_t DMA_finish;
 		};
 
 		struct PTEntry
 		{
 			bool is_pte; // Whether the entry is a PTE or a pointer to the next level of the page table
+			page_permission permission;
+			subsecond_time_t DMA_finish;
 			union
 			{
 				PTE translation;
 				PTFrame *next_level;
 			} data; // Stores whether the entry is a PTE or a pointer to the next level of the page table
+			PTEntry() {
+				permission = READ_WRITE;
+				DMA_finish = SubsecondTime::Zero();
+			}
 		};
 
 		struct PTFrame

@@ -12,7 +12,7 @@
 #include "stats.h"
 #include "mimicos.h"
 
-//#define DEBUG_MMU
+#define DEBUG_MMU
 
 namespace ParametricDramDirectoryMSI
 {
@@ -395,7 +395,7 @@ namespace ParametricDramDirectoryMSI
 			SubsecondTime t_last_DMA_finish = get<6>(retry_result);
 			SubsecondTime t_now = getCore()->getPerformanceModel()->getElapsedTime();
 			if (t_now < t_last_DMA_finish) {
-				// todo: stat infomation of wait time
+				// todo: stat information of wait time
 				shmem_perf_model->setElapsedTime(ShmemPerfModel::_USER_THREAD, t_last_DMA_finish);
 			}
 			

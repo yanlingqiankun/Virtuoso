@@ -5,7 +5,7 @@
 #include "mimicos.h"
 
 // #define DEBUG
-// #define SAMPLE_DEBUG
+#define SAMPLE_DEBUG
 namespace ParametricDramDirectoryMSI
 {
 
@@ -123,7 +123,7 @@ namespace ParametricDramDirectoryMSI
 		pageFaultType fault_type_result = PF_WITHOUT_FAULT;
 		std::shared_mutex &page_lock = get_lock_for_page(address);
 
-		std::shared_lock<std::shared_mutex> read_lock(page_lock);
+		// std::shared_lock<std::shared_mutex> read_lock(page_lock);
 
 		IntPtr offset = (address >> 39) & 0x1FF;
 
@@ -164,12 +164,12 @@ namespace ParametricDramDirectoryMSI
 				{
 					is_pagefault = true;
 					stats.page_faults++;
-					if (current_frame->entries[offset].data.translation.permission == MOVING) {
+					if (current_frame->entries[offset].permission == MOVING) {
 						// This is a special page fault of moving page
 						stats.page_faults_of_migration++;
-						return PTWResult(page_size_result, visited_pts, ppn_result, pwc_latency, is_pagefault, PF_MOVING, current_frame->entries[offset].data.translation.DMA_finish);
+						return PTWResult(page_size_result, visited_pts, ppn_result, pwc_latency, is_pagefault, PF_MOVING, current_frame->entries[offset].DMA_finish);
 					}
-					read_lock.unlock();
+					// read_lock.unlock();
 					if (restart_walk_after_fault)
 						os->handle_page_fault(address, core_id, getMaxLevel());
 
@@ -180,7 +180,7 @@ namespace ParametricDramDirectoryMSI
 					if (restart_walk_after_fault)
 						goto restart_walk;
 					else
-						return PTWResult(page_size_result, visited_pts, ppn_result, pwc_latency, is_pagefault, PF_PTE_PRESENT, current_frame->entries[offset].data.translation.DMA_finish);
+						return PTWResult(page_size_result, visited_pts, ppn_result, pwc_latency, is_pagefault, PF_PTE_PRESENT, current_frame->entries[offset].DMA_finish);
 				}
 				// We found the entry, we can return the result
 
@@ -192,7 +192,7 @@ namespace ParametricDramDirectoryMSI
 				// @kanellok: Be careful with the return values -> always return PPN_RESULT at page size granularity
 				ppn_result = current_frame->entries[offset].data.translation.ppn;
 				page_size_result = m_page_size_list[level - 1]; // If we hit at level 1 (last one), we return the page_size[1-1] = page_size[0] = 4KB
-				wait_latency = current_frame->entries[offset].data.translation.DMA_finish;
+				wait_latency = current_frame->entries[offset].DMA_finish;
 				break;
 			}
 			else
@@ -207,7 +207,7 @@ namespace ParametricDramDirectoryMSI
 #ifdef DEBUG
 					log_file << "[RADIX] Next level is NULL, we need to allocate a new frame" << std::endl;
 #endif
-					read_lock.unlock();
+					// read_lock.unlock();
 					if (restart_walk_after_fault)
 						os->handle_page_fault(address, core_id, getMaxLevel());
 
@@ -221,7 +221,7 @@ namespace ParametricDramDirectoryMSI
 					if (restart_walk_after_fault)
 						goto restart_walk;
 					else
-						return PTWResult(page_size_result, visited_pts, ppn_result, pwc_latency, is_pagefault, PF_PTE_PRESENT, current_frame->entries[offset].data.translation.DMA_finish);
+						return PTWResult(page_size_result, visited_pts, ppn_result, pwc_latency, is_pagefault, PF_PTE_PRESENT, current_frame->entries[offset].DMA_finish);
 				}
 				else
 				{
@@ -410,7 +410,7 @@ namespace ParametricDramDirectoryMSI
 				// We don't change the PPN, as the physical page should be protect.
 				current_frame->entries[offset].data.translation.valid = false;
 
-				current_frame->entries[offset].data.translation.permission = MOVING;
+				current_frame->entries[offset].permission = MOVING;
 				break;
 			}
 			else
@@ -443,8 +443,8 @@ namespace ParametricDramDirectoryMSI
 			{
 				// We don't change the PPN, as the physical page should be protect.
 
-				current_frame->entries[offset].data.translation.DMA_finish = finish_time;
-				current_frame->entries[offset].data.translation.permission = READ_WRITE;
+				current_frame->entries[offset].DMA_finish = finish_time;
+				current_frame->entries[offset].permission = READ_WRITE;
 				current_frame->entries[offset].data.translation.valid = true;
 				break;
 			}
