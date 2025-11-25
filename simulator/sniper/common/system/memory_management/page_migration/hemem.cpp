@@ -10,7 +10,7 @@
 #include "hemem.h"
 #include <queue>
 
-#define PEBS_KSWAPD_INTERVAL      (100000) // in us (10ms)
+#define PEBS_KSWAPD_INTERVAL      (10000000) // in us (1s)
 #define PEBS_KSWAPD_MIGRATE_RATE  (10UL * 1024UL * 1024UL * 1024UL) // 10GB
 #define HOT_READ_THRESHOLD        (1)
 #define HOT_WRITE_THRESHOLD       (1)
@@ -257,8 +257,8 @@ namespace Hemem{
         return success;
     }
 
-    Hemem::Hemem(PageTracer *p)
-        :PageMigration(p),
+    Hemem::Hemem()
+        :PageMigration(),
         pages_hotness(),
         cold_ring(CAPACITY),
         hot_ring(CAPACITY),
@@ -280,67 +280,72 @@ namespace Hemem{
 
     void Hemem::scan() {
         bool perf_empty = false;
+        size_t core_number = Sim()->getCoreManager()->getCoreNum();
         while (still_run) {
-            struct PerfSample page_sample = page_tracer->getPerfSample(&perf_empty);
-            if (perf_empty) {
-                usleep(PEBS_KSWAPD_INTERVAL);
-                continue;
-            }
-            // std::cout << "[Hemem] perf addr : " << reinterpret_cast<void *>(page_sample.addr) << std::endl;
-            UInt64 addr = page_sample.addr & pages_mask[0];  // base page
-            auto it = pages_hotness.find(addr);
-            if (it == pages_hotness.end()) {
-                other_pages_cnt++;
-                usleep(PEBS_KSWAPD_INTERVAL);
-                continue;
-                // return nullptr;
-            }
+            for (int i = 0; i < core_number; ++i) {
+                PageTracer *page_tracer = Sim()->getCoreManager()->getCoreFromID(i)->getPageTracer();
+                while (true) {
+                    PerfSample page_sample = page_tracer->getPerfSample(&perf_empty);
+                    if (perf_empty) {
+                        break;
+                    }
+                    // std::cout << "[Hemem] perf addr : " << reinterpret_cast<void *>(page_sample.addr) << std::endl;
+                    UInt64 addr = page_sample.addr & pages_mask[0];  // base page
+                    auto it = pages_hotness.find(addr);
+                    if (it == pages_hotness.end()) {
+                        other_pages_cnt++;
+                        usleep(PEBS_KSWAPD_INTERVAL);
+                        continue;
+                        // return nullptr;
+                    }
 
-            hemem_page *page = it->second;
-            int access_index = -1;
+                    hemem_page *page = it->second;
+                    int access_index = -1;
 
-            switch (page_sample.type) {
-                case LLC_Miss_RD:
-                    // std::cout << "read" << std::endl;
-                    page->accesses[READ] += 1;
-                    access_index = 0;
-                    break;
-                case LLC_Miss_ST:
-                    // std::cout << "write" << std::endl;
-                    page->accesses[WRITE] += 1;
-                    access_index = 1;
-                    break;
-                default:
-                    // We do not deal page fault in hemem
-                    continue;
-            }
+                    switch (page_sample.type) {
+                        case LLC_Miss_RD:
+                            // std::cout << "read" << std::endl;
+                            page->accesses[READ] += 1;
+                            access_index = 0;
+                            break;
+                        case LLC_Miss_ST:
+                            // std::cout << "write" << std::endl;
+                            page->accesses[WRITE] += 1;
+                            access_index = 1;
+                            break;
+                        default:
+                            // We do not deal page fault in hemem
+                            continue;
+                    }
 
-            if (page->accesses[READ] >= HOT_READ_THRESHOLD || page->accesses[WRITE] >= HOT_READ_THRESHOLD) {
-                // Make the page hot
-                if (!page->hot || !page->ring_present) {
-                    // std::cout << "[Hemem] "<<(void *)it->first<<" enter hot LRU" << std::endl;
-                    page->ring_present = true;
-                    hot_ring.push_back(page);
-                }
-            } else if (page->accesses[WRITE] < HOT_WRITE_THRESHOLD && page->accesses[READ] < HOT_READ_THRESHOLD) {
-                // Make the page cold
-                if (page->hot || !page->ring_present) {
-                    // std::cout << "[Hemem] "<<(void *)it->first<<" enter cold LRU" << std::endl;
-                    page->ring_present = true;
-                    cold_ring.push_back(page);
-                }
-            }
+                    if (page->accesses[READ] >= HOT_READ_THRESHOLD || page->accesses[WRITE] >= HOT_READ_THRESHOLD) {
+                        // Make the page hot
+                        if (!page->hot || !page->ring_present) {
+                            // std::cout << "[Hemem] "<<(void *)it->first<<" enter hot LRU" << std::endl;
+                            page->ring_present = true;
+                            hot_ring.push_back(page);
+                        }
+                    } else if (page->accesses[WRITE] < HOT_WRITE_THRESHOLD && page->accesses[READ] < HOT_READ_THRESHOLD) {
+                        // Make the page cold
+                        if (page->hot || !page->ring_present) {
+                            // std::cout << "[Hemem] "<<(void *)it->first<<" enter cold LRU" << std::endl;
+                            page->ring_present = true;
+                            cold_ring.push_back(page);
+                        }
+                    }
 
-            page->accesses[access_index] >>= (global_clock - page->local_clock);
-            page->local_clock = global_clock;
-            if (page->accesses[access_index] > PEBS_COOLING_THRESHOLD) {
-                global_clock ++;
-                need_cool_dram = true;
-                need_cool_nvm = true;
-            }
-            hemem_pages_cnt++;
-        }
-        // return nullptr;
+                    page->accesses[access_index] >>= (global_clock - page->local_clock);
+                    page->local_clock = global_clock;
+                    if (page->accesses[access_index] > PEBS_COOLING_THRESHOLD) {
+                        global_clock ++;
+                        need_cool_dram = true;
+                        need_cool_nvm = true;
+                    }
+                    hemem_pages_cnt++;
+                } // while for one core ring buffer
+            } // iterate every cores
+            usleep(PEBS_KSWAPD_INTERVAL);
+        } // while (run)
     }
 
 

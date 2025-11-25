@@ -111,7 +111,7 @@ namespace Hemem {
         void policy();
 
     public:
-        Hemem(PageTracer *p);
+        Hemem();
         ~Hemem();
         void start();
         void stop();

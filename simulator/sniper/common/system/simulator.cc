@@ -136,7 +136,6 @@ void Simulator::start()
 	m_rtn_tracer = RoutineTracer::create();
 	m_thread_manager = new ThreadManager();
 
-	
 	if (Sim()->getCfg()->getBool("traceinput/enabled"))
 		m_trace_manager = new TraceManager();
 	else
@@ -145,12 +144,11 @@ void Simulator::start()
 	m_mimicos = new MimicOS(false); // Create a new VirtuOS object for the host OS
 
 	virtualized_system = Sim()->getCfg()->getBool("general/virtualized_environment");
-	
+
 	if(virtualized_system)
 		m_mimicos_vm = new MimicOS(true); // Create a new VirtuOS object for the guest OS
-	
-	m_core_manager = new CoreManager();
 
+	m_core_manager = new CoreManager();
 
 	CircularLog::enableCallbacks();
 
@@ -192,6 +190,9 @@ void Simulator::start()
 	{
 		// roi-begin
 		Sim()->getMagicServer()->setPerformance(true);
+	}
+	if (Sim()->getCfg()->hasKey("perf_model/migration_enable")) {
+		getMimicOS()->getPageMigrationHandler()->start();
 	}
 
 	m_running = true;

@@ -585,7 +585,7 @@ namespace ParametricDramDirectoryMSI
 		if(result == HitWhere::where_t::DRAM || result == HitWhere::where_t::DRAM_CACHE || result == HitWhere::where_t::DRAM_LOCAL || result == HitWhere::where_t::DRAM_REMOTE){
 			dram_access = true;
 			if (getPageMigrationEnable())
-				Sim()->getMimicOS()->getPageTracer()->record(address, mem_op_type == Core::mem_op_t::WRITE ? AccessType::WRITE:AccessType::READ, getCore()->getThread()->getAppId(),eip);
+				getCore()->getPageTracer()->record(address, mem_op_type == Core::mem_op_t::WRITE ? AccessType::WRITE:AccessType::READ, getCore()->getThread()->getAppId(),eip);
 		}
 
 

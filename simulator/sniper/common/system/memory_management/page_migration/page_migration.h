@@ -25,18 +25,12 @@ typedef enum {
 class PageMigration {
 protected:
     String name;
-    PageTracer *page_tracer;
     UInt64 pages_mask[2] = {(BASE_PAGE_MASK), (HUGE_PAGE_MASK)};
 
 public:
     void setName(String name) {this->name = name; }
     String getName() {return this->name; }
-    PageMigration(PageTracer *pt) {
-        if (pt != nullptr)
-            page_tracer = pt;
-        else
-            std::cout << "[Page Migration] get a null page tracer" << std::endl;
-    }
+    PageMigration() {}
     virtual void page_fault(UInt64 laddr, void *ptr){}
     virtual void start() = 0;
     virtual void stop() = 0;

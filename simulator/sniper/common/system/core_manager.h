@@ -46,6 +46,7 @@ class CoreManager
       }
 
       Core *getCoreFromID(core_id_t core_id);
+      size_t getCoreNum() {return m_cores.size();}
 
       bool amiUserThread();
       bool amiCoreThread();

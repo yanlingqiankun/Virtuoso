@@ -27,6 +27,7 @@ class CheetahManager;
 #include <queue>
 #include <set>
 #include "network.h"
+#include "page_migration/page_tracer.h"
 
 struct MemoryResult {
    HitWhere::where_t hit_where;
@@ -138,6 +139,7 @@ class Core
       bool isEnabledInstructionsCallback() { return m_instructions_callback != UINT64_MAX; }
       void setInstructionsCallback(UInt64 instructions) { m_instructions_callback = m_instructions + instructions; }
       void disableInstructionsCallback() { m_instructions_callback = UINT64_MAX; }
+      PageTracer *getPageTracer() { return page_tracer; }
 
       void enablePerformanceModels();
       void disablePerformanceModels();
@@ -221,6 +223,7 @@ class Core
       UInt64 number_of_shootdown_requests = 0;
       State m_core_state;
       ShmemPerf* m_shmem_perf;
+      PageTracer *page_tracer;
 
       static Lock m_global_core_lock;
 

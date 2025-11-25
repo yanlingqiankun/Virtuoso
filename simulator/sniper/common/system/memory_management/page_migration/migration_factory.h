@@ -13,7 +13,7 @@
 
 class MigrationFactory {
 public:
-    static PageMigration *createMigration(String mimicos_name, PageTracer *p) {
+    static PageMigration *createMigration(String mimicos_name) {
         // bool migration_open = Sim()->getCfg()->getBool("per_model/"+mimicos_name+"/migration");
         // if (!migration_open) {
         //     return NULL;
@@ -21,7 +21,7 @@ public:
         String migration_type = Sim()->getCfg()->getString("perf_model/"+mimicos_name+"/migration_type");
         std::cout << "[Page migration] migration type is "<< migration_type << std::endl;
         if (migration_type == "hemem") {
-            return new Hemem::Hemem(p);
+            return new Hemem::Hemem();
         } else if (migration_type == "memtis") {
             return NULL;
         } else if (migration_type == "nomad") {

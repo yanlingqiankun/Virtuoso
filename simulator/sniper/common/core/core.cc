@@ -107,6 +107,13 @@ Core::Core(SInt32 id)
          this, m_network, m_shmem_perf_model);
 
    m_performance_model = PerformanceModel::create(this);
+   if (Sim()->getCfg()->hasKey("perf_model/migration_enable")) {
+      int sampling_frequency = Sim()->getCfg()->getInt("perf_model/mimicos_host/sampling_frequency");
+      page_tracer = new PageTracer(sampling_frequency);
+   } else {
+      page_tracer = new PageTracer();
+   }
+
 }
 
 Core::~Core()

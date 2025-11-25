@@ -53,9 +53,7 @@ MimicOS::MimicOS(bool _is_guest) : m_page_fault_latency(NULL, 0), tlb_flush_late
     std::cout << "[MimicOS] Page fault latency is " << m_page_fault_latency.getLatency().getNS() << " ns" << std::endl;
 
     if (Sim()->getCfg()->hasKey("perf_model/migration_enable")) {
-        int sampling_frequency = Sim()->getCfg()->getInt("perf_model/" + mimicos_name + "/sampling_frequency");
-        page_tracer = new PageTracer(sampling_frequency);
-        page_migration_handler = MigrationFactory::createMigration(mimicos_name, page_tracer);
+        page_migration_handler = MigrationFactory::createMigration(mimicos_name);
         if (page_migration_handler) {
             tlb_flush_latency = ComponentLatency(Sim()->getDvfsManager()->getGlobalDomain(),
                                                  Sim()->getCfg()->getInt(
@@ -68,7 +66,6 @@ MimicOS::MimicOS(bool _is_guest) : m_page_fault_latency(NULL, 0), tlb_flush_late
                                                      "perf_model/" + mimicos_name + "/ipi_handle_latency"));
             std::cout << "[MimicOS] Page migration handler is " << page_migration_handler->getName() << std::endl;
             std::cout << "[MimicOS] TLB flush latency is " << tlb_flush_latency.getLatency().getNS() << "ns" << std::endl;
-            page_migration_handler->start();
         } else {
             std::cout << "[MimicOS] Page migration handler disabled" << std::endl;
         }
