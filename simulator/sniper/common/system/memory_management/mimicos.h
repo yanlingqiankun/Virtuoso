@@ -54,7 +54,7 @@ private:
     ComponentLatency ipi_initiate_latency;
     ComponentLatency ipi_handle_latency;
 
-    map<IntPtr,pair<array<IntPtr, TLB_SHOOT_DOWN_SIZE>,array<IntPtr, TLB_SHOOT_DOWN_SIZE>>> DMA_map; // request_id -> <virtual addr, new physical addr>
+    map<IntPtr,pair<array<IntPtr, TLB_SHOOT_DOWN_MAX_SIZE>,array<IntPtr, TLB_SHOOT_DOWN_MAX_SIZE>>> DMA_map; // request_id -> <virtual addr, new physical addr>
 
 public:
     MimicOS(bool _is_guest);
@@ -91,7 +91,7 @@ public:
 
     PageMigration *getPageMigrationHandler() { return page_migration_handler; }
     SubsecondTime getTLBFlushLatency() {return tlb_flush_latency.getLatency(); }
-    core_id_t flushTLB(int app_id, array<IntPtr, TLB_SHOOT_DOWN_SIZE> addrs);
+    core_id_t flushTLB(int app_id, array<IntPtr, TLB_SHOOT_DOWN_MAX_SIZE> addrs);
     bool move_pages(std::queue<Hemem::hemem_page*> pages, std::queue<bool> migrate_up, int app_id);
     void DMA_migrate(IntPtr move_id, subsecond_time_t finish_time, int app_id = 0);
 };

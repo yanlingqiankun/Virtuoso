@@ -191,7 +191,7 @@ void Simulator::start()
 		// roi-begin
 		Sim()->getMagicServer()->setPerformance(true);
 	}
-	if (Sim()->getCfg()->hasKey("perf_model/migration_enable")) {
+	if (Sim()->getCfg()->hasKey("migration/migration_enable")) {
 		getMimicOS()->getPageMigrationHandler()->start();
 	}
 

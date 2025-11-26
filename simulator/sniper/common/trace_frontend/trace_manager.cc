@@ -107,7 +107,7 @@ thread_id_t TraceManager::newThread(app_id_t app_id, bool first, bool init_fifo,
    // Create one App Instance for the application in the VM
 
     // Choosing an inaccurate way to simulate multiple threads
-    if (Sim()->getCfg()->hasKey("perf_model/migration_enable")) {
+    if (Sim()->getCfg()->hasKey("migration/migration_enable")) {
         app_id = 0;
     }
 

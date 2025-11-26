@@ -44,7 +44,7 @@ public:
                                                                                        m_network(network),
                                                                                        m_shmem_perf_model(shmem_perf_model)
    {
-      if (Sim()->getCfg()->hasKey("perf_model/migration_enable")) {
+      if (Sim()->getCfg()->hasKey("migration/migration_enable")) {
          page_migration_enable = true;
       }
    }

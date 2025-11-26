@@ -113,8 +113,8 @@ namespace Hemem {
     public:
         Hemem();
         ~Hemem();
-        void start();
-        void stop();
+        void start() override;
+        void stop() override;
         void page_fault(UInt64 laddr, void *ptr) override;
     };
     pageTypes pagesize_to_pt(int page_size);

@@ -19,7 +19,7 @@ public:
         // if (!migration_open) {
         //     return NULL;
         // }
-        String migration_type = Sim()->getCfg()->getString("perf_model/"+mimicos_name+"/migration_type");
+        String migration_type = Sim()->getCfg()->getString("migration/migration_type");
         std::cout << "[Page migration] migration type is "<< migration_type << std::endl;
         if (migration_type == "hemem") {
             return new Hemem::Hemem();

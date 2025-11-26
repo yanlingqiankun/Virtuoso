@@ -28,12 +28,13 @@ protected:
     UInt64 pages_mask[2] = {(BASE_PAGE_MASK), (HUGE_PAGE_MASK)};
 
 public:
+    virtual void setBatchSize(size_t size){}
     void setName(String name) {this->name = name; }
     String getName() {return this->name; }
     PageMigration() {}
     virtual void page_fault(UInt64 laddr, void *ptr){}
-    virtual void start() = 0;
-    virtual void stop() = 0;
+    virtual void start() {};
+    virtual void stop() {};
 };
 
 #endif //PAGE_MIGRATION_H

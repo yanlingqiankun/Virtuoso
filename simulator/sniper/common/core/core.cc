@@ -68,6 +68,7 @@ const char * Core::CoreStateString(Core::State state)
 Lock Core::m_global_core_lock;
 UInt64 Core::g_instructions_hpi_global = 0;
 UInt64 Core::g_instructions_hpi_global_callback = 0;
+int TLB_SHOOT_DOWN_SIZE = 0;
 
 Core::Core(SInt32 id)
    : m_core_id(id)
@@ -108,8 +109,8 @@ Core::Core(SInt32 id)
          this, m_network, m_shmem_perf_model);
 
    m_performance_model = PerformanceModel::create(this);
-   if (Sim()->getCfg()->hasKey("perf_model/migration_enable")) {
-      int sampling_frequency = Sim()->getCfg()->getInt("perf_model/mimicos_host/sampling_frequency");
+   if (Sim()->getCfg()->hasKey("migration/migration_enable")) {
+      int sampling_frequency = Sim()->getCfg()->getInt("migration/sampling_frequency");
       page_tracer = new PageTracer(sampling_frequency);
    } else {
       page_tracer = new PageTracer();
@@ -678,7 +679,8 @@ void Core::networkHandleTLBShootdownAck(PrL1PrL2DramDirectoryMSI::ShmemMsg *shme
 #endif
       cout << "core " << getId() << " receive of 0x" << request_id << " : [ ";
 
-      for (bool res : payload->flush_result) {
+      for (int i = 0; i < TLB_SHOOT_DOWN_SIZE; ++i) {
+         auto res = payload->flush_result[i];
          cout << (res ? "1" : "0"); // 或者直接 cout << res; 也就是输出 0或1
       }
       cout << " ]" << endl;
@@ -717,7 +719,7 @@ void Core::networkHandleTLBShootdownAck(PrL1PrL2DramDirectoryMSI::ShmemMsg *shme
  * It can be called by the local OS thread (to initiate a broadcast)
  * or by the network thread (in response to a broadcast).
  */
-void Core::enqueueTLBShootdownRequest(std::array<IntPtr, TLB_SHOOT_DOWN_SIZE> &pages_array, core_id_t init_id, int app_id)
+void Core::enqueueTLBShootdownRequest(std::array<IntPtr, TLB_SHOOT_DOWN_MAX_SIZE> &pages_array, core_id_t init_id, int app_id)
 {
     ScopedLock sl(m_tlb_shootdown_buffer_lock);
 
@@ -780,7 +782,7 @@ void Core::handleRemoteTLBShootdownRequest(TLBShootdownRequest &request)
 #ifdef TLB_SHOOTDOWN_DEBUG
       cout << "core "<< getId() << " dealing TLB shootdown request = 0x" << request.addrs.at(0) << endl;
 #endif
-   std::array<bool, TLB_SHOOT_DOWN_SIZE> flush_result{};
+   std::array<bool, TLB_SHOOT_DOWN_MAX_SIZE> flush_result{};
 
    // 1. get m_mem_lock
    {

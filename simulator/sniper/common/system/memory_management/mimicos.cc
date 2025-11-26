@@ -52,18 +52,20 @@ MimicOS::MimicOS(bool _is_guest) : m_page_fault_latency(NULL, 0), tlb_flush_late
 
     std::cout << "[MimicOS] Page fault latency is " << m_page_fault_latency.getLatency().getNS() << " ns" << std::endl;
 
-    if (Sim()->getCfg()->hasKey("perf_model/migration_enable")) {
+    if (Sim()->getCfg()->hasKey("migration/migration_enable")) {
         page_migration_handler = MigrationFactory::createMigration(mimicos_name);
         if (page_migration_handler) {
+            TLB_SHOOT_DOWN_SIZE = Sim()->getCfg()->getInt("migration/tlb_shootdown_size");
+            page_migration_handler->setBatchSize(TLB_SHOOT_DOWN_SIZE);
             tlb_flush_latency = ComponentLatency(Sim()->getDvfsManager()->getGlobalDomain(),
                                                  Sim()->getCfg()->getInt(
-                                                     "perf_model/" + mimicos_name + "/tlb_flush_latency"));
+                                                     "migration/tlb_flush_latency"));
             ipi_initiate_latency = ComponentLatency(Sim()->getDvfsManager()->getGlobalDomain(),
                                                  Sim()->getCfg()->getInt(
-                                                     "perf_model/" + mimicos_name + "/ipi_initiate_latency"));
+                                                     "migration/ipi_initiate_latency"));
             ipi_handle_latency = ComponentLatency(Sim()->getDvfsManager()->getGlobalDomain(),
                                                  Sim()->getCfg()->getInt(
-                                                     "perf_model/" + mimicos_name + "/ipi_handle_latency"));
+                                                     "migration/ipi_handle_latency"));
             std::cout << "[MimicOS] Page migration handler is " << page_migration_handler->getName() << std::endl;
             std::cout << "[MimicOS] TLB flush latency is " << tlb_flush_latency.getLatency().getNS() << "ns" << std::endl;
         } else {
@@ -88,7 +90,7 @@ MimicOS::~MimicOS()
  * is correctly padded (filled with 0s if not full).
  * @return core_id_t The ID of the core that issued this request.
  */
-core_id_t MimicOS::flushTLB(int app_id, array<IntPtr, TLB_SHOOT_DOWN_SIZE> page_batch)
+core_id_t MimicOS::flushTLB(int app_id, array<IntPtr, TLB_SHOOT_DOWN_MAX_SIZE> page_batch)
 {
     CoreManager *core_manager = Sim()->getCoreManager();
     UInt32 total_cores = Sim()->getConfig()->getTotalCores();
@@ -143,8 +145,8 @@ bool MimicOS::move_pages(std::queue<Hemem::hemem_page*> src_pages_queue,
     std::queue<bool> batch_directions_for_migration; // Stores directions (for steps 4/5/6)
 
     // --- Arrays for flushTLB and DMA_map ---
-    std::array<IntPtr, TLB_SHOOT_DOWN_SIZE> batch_vaddrs_array{};
-    std::array<IntPtr, TLB_SHOOT_DOWN_SIZE> batch_new_phy_addrs_array{};
+    std::array<IntPtr, TLB_SHOOT_DOWN_MAX_SIZE> batch_vaddrs_array{};
+    std::array<IntPtr, TLB_SHOOT_DOWN_MAX_SIZE> batch_new_phy_addrs_array{};
     int batch_count = 0;
 
     // --- Step 1: Iterate, allocate, and process in batches ---

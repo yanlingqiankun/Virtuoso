@@ -36,8 +36,10 @@ struct MemoryResult {
 
 MemoryResult makeMemoryResult(HitWhere::where_t _hit_where, SubsecondTime _latency);
 void applicationMemCopy(void *dest, const void *src, size_t n);
-int const TLB_SHOOT_DOWN_SIZE=32;
 void CoreNetworkCallback(void* obj, NetPacket packet);
+
+constexpr int TLB_SHOOT_DOWN_MAX_SIZE = 128;
+extern int TLB_SHOOT_DOWN_SIZE;
 
 class Core
 {
@@ -166,7 +168,7 @@ class Core
          core_id_t initiator_core_id;
          SubsecondTime timestamp;
          IntPtr id;  // use address of the first page to identify request
-         std::array<IntPtr, TLB_SHOOT_DOWN_SIZE> addrs;
+         std::array<IntPtr, TLB_SHOOT_DOWN_MAX_SIZE> addrs;
       };
       std::queue<TLBShootdownRequest> m_tlb_shootdown_buffer;
       Lock m_tlb_shootdown_buffer_lock;
@@ -187,19 +189,19 @@ class Core
       struct TLBShootdownRequestPayload {
          int app_id;
          IntPtr request_id; // Unique ID (e.g., pages_array.front())
-         std::array<IntPtr, TLB_SHOOT_DOWN_SIZE> addrs;
+         std::array<IntPtr, TLB_SHOOT_DOWN_MAX_SIZE> addrs;
       };
 
       // Payload for the TLB Shootdown acknowledgment
       struct TLBShootdownAckPayload {
          IntPtr request_id;
-         std::array<bool, TLB_SHOOT_DOWN_SIZE> flush_result;
+         std::array<bool, TLB_SHOOT_DOWN_MAX_SIZE> flush_result;
          // (from_core_id and time are already metadata in NetPacket/ShmemMsg)
       };
 
       void initiateTLBShootdownBroadcast(TLBShootdownRequest &request);
 
-      void enqueueTLBShootdownRequest(std::array<IntPtr, TLB_SHOOT_DOWN_SIZE> &pages_queue, core_id_t init_id, int app_id); //向 buffer 中添加 TLB shootdown 请求
+      void enqueueTLBShootdownRequest(std::array<IntPtr, TLB_SHOOT_DOWN_MAX_SIZE> &pages_queue, core_id_t init_id, int app_id); //向 buffer 中添加 TLB shootdown 请求
       void processTLBShootdownBuffer(bool processing_remote_only); // 处理 buffer 中的 TLB shootdown 请求
       void handleRemoteTLBShootdownRequest(TLBShootdownRequest &request);
       void handleMsgFromOtherCore(core_id_t sender, PrL1PrL2DramDirectoryMSI::ShmemMsg *shmem_msg);
