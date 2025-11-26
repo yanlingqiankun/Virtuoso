@@ -36,7 +36,7 @@ struct MemoryResult {
 
 MemoryResult makeMemoryResult(HitWhere::where_t _hit_where, SubsecondTime _latency);
 void applicationMemCopy(void *dest, const void *src, size_t n);
-int const TLB_SHOOT_DOWN_SIZE=1;
+int const TLB_SHOOT_DOWN_SIZE=32;
 void CoreNetworkCallback(void* obj, NetPacket packet);
 
 class Core

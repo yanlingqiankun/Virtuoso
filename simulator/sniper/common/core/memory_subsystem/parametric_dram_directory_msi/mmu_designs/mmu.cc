@@ -657,48 +657,54 @@ namespace ParametricDramDirectoryMSI
 	{
 		return ;
 	}
+
 	bool MemoryManagementUnit::MMUFlushTLB(int appid, IntPtr address, Core::lock_signal_t lock, bool modeled, bool count)
-	{
+{
+   // Get the TLB hierarchy structure
+   // tlbs[i] represents Level i, tlbs[i][j] represents the j-th component at Level i
+   TLBSubsystem tlbs = tlb_subsystem->getTLBSubsystem();
+
+   bool entry_found_anywhere = false;
+
+   // Iterate through ALL TLB levels (L1, L2, etc.)
+   // We search every level unconditionally to ensure data consistency (essential for non-inclusive architectures)
+   for (UInt32 i = 0; i < tlbs.size(); i++)
+   {
+      // Iterate through all components at this level (e.g., i-TLB and d-TLB)
+      for (UInt32 j = 0; j < tlbs[i].size(); j++)
+      {
+         // Perform a lookup to locate the TLB entry.
+         // Important: We pass 'false' for count/modeled and Zero for time.
+         // This ensures that the shootdown operation does not pollute the
+         // "TLB Hit/Miss" statistics or the performance model.
+         CacheBlockInfo *tlb_block_info = tlbs[i][j]->lookup(
+             address,               // Virtual Address to flush
+             SubsecondTime::Zero(), // Time: Ignored (no latency modeling)
+             false,                 // Count: false (do not update stats)
+             lock,                  // Lock signal
+             NULL,                  // EIP: Not needed for flush
+             false,                 // Modeled: false (no contention modeling)
+             false,                 // Count: false
+             NULL                   // PageTable: Not needed
+         );
+
+         // If the entry is found, invalidate it immediately
+         if (tlb_block_info != NULL)
+         {
+            tlb_block_info->invalidate();
+            entry_found_anywhere = true;
+
 #ifdef DEBUG_TLB_SHOOTDOWN
-		log_file << std::endl;
-		log_file << "[SHOOTDOWN] ---- Starting address SHOOTDOWN for virtual address: " << address <<  " ---- at time " << shmem_perf_model->getElapsedTime(ShmemPerfModel::_USER_THREAD) << std::endl;
+            std::cout << "[SHOOTDOWN] Invalidated address 0x" << std::hex << address
+                      << " at Level " << std::dec << i
+                      << " Component " << j << std::endl;
 #endif
-		SubsecondTime time = shmem_perf_model->getElapsedTime(ShmemPerfModel::_USER_THREAD);
-		TLBSubsystem tlbs = tlb_subsystem->getTLBSubsystem();
-		CacheBlockInfo *tlb_block_info = NULL; // This is the block info that we get from the TLB lookup
+         }
+      }
+   }
 
-		// Search TLB entry starting in LOW level
-		UInt32 find_level = ~0;
-		bool find_tlb = true;
-		for (UInt32 j = tlbs.size() - 1;  find_tlb && j < tlbs.size() ; j--) {
-			find_tlb = false;
-			for (UInt32 i = 0; i < tlbs[j].size(); i++) {
-
-				tlb_block_info = tlbs[j][i]->lookup(address, time, count, lock, NULL, modeled, count, NULL);
-				if (tlb_block_info != NULL) {
-					// If we find the tlb, invalid it
-					tlb_block_info->invalidate();
-					find_tlb = true;
-				}
-				if (find_level == ~0) {
-					// We first find the TLB and record some information
-					SubsecondTime tlb_flush_latency = tlbs[i][j]->getLatency();
-					// add flush latency
-					if (count)
-					{
-						translation_stats.tlb_flush++;
-						translation_stats.tlb_flush_latency += tlb_flush_latency;
-					}
-					find_level = j;
-				}
-			}
-			if (!find_tlb) {
-				// The first level that does not contain the tlb
-				return false;
-			}
-		}
-		return true;
-	}
-
+   // Return true if the address was found and invalidated in at least one TLB unit
+   return entry_found_anywhere;
+}
 
 }

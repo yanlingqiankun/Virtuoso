@@ -22,6 +22,7 @@
 #include "fastforward_performance_model.h"
 #include "mimicos.h"
 #include "pthread_emu.h"
+// #define TLB_SHOOTDOWN_DEBUG
 
 #if 0
    extern Lock iolock;
@@ -669,10 +670,18 @@ void Core::networkHandleTLBShootdownAck(PrL1PrL2DramDirectoryMSI::ShmemMsg *shme
       auto* payload = reinterpret_cast<TLBShootdownAckPayload *>(shmem_msg->getDataBuf());
       IntPtr request_id = shmem_msg->getAddress();
       core_id_t from_core = shmem_msg->getRequester();
-      SubsecondTime msg_time = getShmemPerfModel()->getElapsedTime(ShmemPerfModel::_SIM_THREAD);;
+      SubsecondTime msg_time = getShmemPerfModel()->getElapsedTime(ShmemPerfModel::_SIM_THREAD);
 
       Semaphore* sem_to_signal = nullptr;
+#ifdef TLB_SHOOTDOWN_DEBUG
       cout << "core " << getId() << " dealing reply of 0x" << request_id << endl;
+#endif
+      cout << "core " << getId() << " receive of 0x" << request_id << " : [ ";
+
+      for (bool res : payload->flush_result) {
+         cout << (res ? "1" : "0"); // 或者直接 cout << res; 也就是输出 0或1
+      }
+      cout << " ]" << endl;
 
       {
          ScopedLock sl(m_pending_shootdowns_lock);
@@ -696,11 +705,9 @@ void Core::networkHandleTLBShootdownAck(PrL1PrL2DramDirectoryMSI::ShmemMsg *shme
          // else: Record already cleaned up (should not happen if wait_sem is used)
       } // Lock is released here
 
-      // 4. Signal the specific semaphore *outside* of the lock
-      // if (sem_to_signal) {
-      //    sem_to_signal->signal(); // wakeup _USER_THREAD
-      // }
+#ifdef TLB_SHOOTDOWN_DEBUG
       cout << "core " << getId() <<" recieved reply of 0x" << request_id << endl;
+#endif
 }
 
 /**
@@ -766,29 +773,13 @@ void Core::processTLBShootdownBuffer(bool processing_remote_only)
             }
          }
       }
-
-   // while (true) {
-   //    TLBShootdownRequest request;
-   //    {
-   //       ScopedLock sl(m_tlb_shootdown_buffer_lock);
-   //       if (m_tlb_shootdown_buffer.empty())
-   //          break;
-   //       request = m_tlb_shootdown_buffer.front();
-   //       m_tlb_shootdown_buffer.pop();
-   //    }
-   //
-   //    // Only process requests initiated by this core
-   //    if (request.initiator_core_id == m_core_id) {
-   //       initiateTLBShootdownBroadcast(request);
-   //    } else {
-   //       handleRemoteTLBShootdownRequest(request);
-   //    }
-   // }
 }
 
 void Core::handleRemoteTLBShootdownRequest(TLBShootdownRequest &request)
 {
+#ifdef TLB_SHOOTDOWN_DEBUG
       cout << "core "<< getId() << " dealing TLB shootdown request = 0x" << request.addrs.at(0) << endl;
+#endif
    std::array<bool, TLB_SHOOT_DOWN_SIZE> flush_result{};
 
    // 1. get m_mem_lock
@@ -811,7 +802,9 @@ void Core::handleRemoteTLBShootdownRequest(TLBShootdownRequest &request)
    TLBShootdownAckPayload ack_payload{};
    ack_payload.request_id = request.id;
    ack_payload.flush_result = flush_result;
+#ifdef TLB_SHOOTDOWN_DEBUG
       cout << "core "<< getId() << " send TLB shootdown reply = 0x" << request.addrs.at(0) << endl;
+#endif
    getMemoryManager()->sendMsg(
        PrL1PrL2DramDirectoryMSI::ShmemMsg::TLB_SHOOTDOWN_ACK,
        MemComponent::CORE, MemComponent::CORE,
@@ -861,7 +854,9 @@ void Core::initiateTLBShootdownBroadcast(TLBShootdownRequest &request)
 
 
        // 3. Send shootdown request to all other cores (via "direct function call")
+#ifdef TLB_SHOOTDOWN_DEBUG
       cout << "core "<< getId() << " broadcast tlb flush request = 0x" <<request.addrs.at(0) << endl;
+#endif
       if (num_to_wait_for > 0) {
          TLBShootdownRequestPayload payload{};
          payload.app_id = request.app_id;
@@ -884,8 +879,9 @@ void Core::initiateTLBShootdownBroadcast(TLBShootdownRequest &request)
        }
        // Account for local flush latency
        getPerformanceModel()->getFastforwardPerformanceModel()->incrementElapsedTime(ipi_handle_latency);
-
+#ifdef TLB_SHOOTDOWN_DEBUG
       cout << "core "<< getId() << " waiting reply for request = 0x" << request.addrs.at(0) << endl;
+#endif
       // todo: update time from other core
       if (num_to_wait_for) {
          while (true) {

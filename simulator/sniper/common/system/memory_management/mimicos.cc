@@ -79,80 +79,6 @@ MimicOS::~MimicOS()
     delete m_memory_allocator;
 }
 
-// core_id_t MimicOS::flushTLB(int app_id, std::queue<IntPtr> addrs) {
-//     CoreManager *core_manager = Sim()->getCoreManager();
-//     UInt32 total_cores = Sim()->getConfig()->getTotalCores();
-//
-//     // Randomly select a core as the issuer to flush TLB
-//     UInt32 issuer_core_id = rand() % total_cores;
-//
-//     core_manager->getCoreFromID(issuer_core_id)->enqueueTLBShootdownRequest(addrs, issuer_core_id, app_id);
-//
-//     return issuer_core_id;
-// }
-//
-// bool MimicOS::move_pages(std::queue<Hemem::hemem_page*> pages, std::queue<bool> migrate_up, int app_id)
-// {
-//     // Hemem::hemem_page* src_page = static_cast<Hemem::hemem_page*>(page_ptr);
-//     HememAllocator* allocator = dynamic_cast<HememAllocator*>(getMemoryAllocator());
-//     if (!allocator) {
-//         return false;
-//     }
-//
-//     // 1. To get the source page metadata
-//     allocator->deallocatePages(pages, migrate_up, app_id); // Temporarily deallocate to get free pages
-//
-//     std::queue<IntPtr> addrs;
-//     while (!pages.empty()) {
-//         Hemem::hemem_page* page = pages.front();
-//         pages.pop();
-//         addrs.push(page->vaddr);
-//     }
-//
-//     // 2. Get free pages in the destination memory tier
-//     // std::queue<Hemem::hemem_page*> dst_page = allocator->getFreePages(migrate_up /* queue of is_dram */);
-//
-//     // if (dst_page == nullptr) {
-//     //     // Optional: Implement logic to swap out a cold page to make space
-//     //     std::cout << "[MimicOS] No free page available for migration. Migration failed." << std::endl;
-//     //     return false;
-//     // }
-//
-//     // 2. Swap physical addresses and metadata
-//     // UInt64 old_phy_addr = src_page->phy_addr;
-//     // auto temp_phy_addr = src_page->phy_addr;
-//     // src_page->phy_addr = dst_page->phy_addr;
-//     // dst_page->phy_addr = temp_phy_addr;
-//
-//     // src_page->in_dram = migrate_up;
-//
-//     // 1. Unmap the old page table entry
-//     ParametricDramDirectoryMSI::PageTable* pt = getPageTable(app_id);
-//     if (pt) {
-//         // pt->page_unmap(src_page->vaddr);
-//         for (int i = 0; i < addrs.size(); i++) {
-//             IntPtr page_addr = addrs.front();
-//             addrs.pop();
-//             pt->page_moving(page_addr);
-//         }
-//     }
-//     // 3. Flush the TLB for the given virtual address, by the way flush cache of pages
-//     core_id_t issuer_core_id = flushTLB(app_id, addrs);
-//
-//     // 4. move from old to new locations
-//     std::queue<Hemem::hemem_page*> dst_page = allocator->getFreePages(migrate_up);
-//     std::queue<IntPtr> dst_addrs;
-//     while (!dst_page.empty()) {
-//         Hemem::hemem_page* page = dst_page.front();
-//         dst_page.pop();
-//         dst_addrs.push(page->vaddr);
-//     }
-//     CoreManager *core_manager = Sim()->getCoreManager();
-//     core_manager->getCoreFromID(issuer_core_id)->getShmemPerfModel()->getElapsedTime(ShmemPerfModel::_USER_THREAD);
-//
-//
-//     return true;
-// }
 /**
  * @brief (Modified) Receives a pre-filled array of addresses (one batch) and issues a TLB shootdown request.
  *
@@ -192,7 +118,7 @@ bool MimicOS::move_pages(std::queue<Hemem::hemem_page*> src_pages_queue,
                          std::queue<bool> migrate_up_queue,
                          int app_id)
 {
-    cout << __func__ << " start : 0x" << src_pages_queue.front()->vaddr << endl;
+    // cout << __func__ << " start : 0x" << src_pages_queue.front()->vaddr << endl;
     HememAllocator* allocator = dynamic_cast<HememAllocator*>(getMemoryAllocator());
     if (!allocator) {
         std::cerr << "[MimicOS] Error: HememAllocator not found." << std::endl;

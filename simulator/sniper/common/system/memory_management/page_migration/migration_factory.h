@@ -10,6 +10,7 @@
 
 #include "simulator.h"
 #include "page_migration.h"
+#include "memtis.h"
 
 class MigrationFactory {
 public:
@@ -23,7 +24,7 @@ public:
         if (migration_type == "hemem") {
             return new Hemem::Hemem();
         } else if (migration_type == "memtis") {
-            return NULL;
+            return new Hemem::Memtis();
         } else if (migration_type == "nomad") {
             return NULL;
         } else {
