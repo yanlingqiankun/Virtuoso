@@ -169,6 +169,7 @@ class Core
          SubsecondTime timestamp;
          IntPtr id;  // use address of the first page to identify request
          std::array<IntPtr, TLB_SHOOT_DOWN_MAX_SIZE> addrs;
+         int pages_num;
       };
       std::queue<TLBShootdownRequest> m_tlb_shootdown_buffer;
       Lock m_tlb_shootdown_buffer_lock;
@@ -179,8 +180,6 @@ class Core
          std::set<core_id_t> pending_cores;  // 等待响应的核心集合
          std::set<bool> acked_pages; // 已确认刷新页面集合
          SubsecondTime max_end_time;
-         Semaphore *sem;
-         PendingShootdown(): sem(nullptr) {}
       };
       std::map<IntPtr, PendingShootdown> m_pending_shootdowns;
       Lock m_pending_shootdowns_lock;
@@ -190,18 +189,20 @@ class Core
          int app_id;
          IntPtr request_id; // Unique ID (e.g., pages_array.front())
          std::array<IntPtr, TLB_SHOOT_DOWN_MAX_SIZE> addrs;
+         int page_num;
       };
 
       // Payload for the TLB Shootdown acknowledgment
       struct TLBShootdownAckPayload {
          IntPtr request_id;
          std::array<bool, TLB_SHOOT_DOWN_MAX_SIZE> flush_result;
+         int page_num;
          // (from_core_id and time are already metadata in NetPacket/ShmemMsg)
       };
 
       void initiateTLBShootdownBroadcast(TLBShootdownRequest &request);
 
-      void enqueueTLBShootdownRequest(std::array<IntPtr, TLB_SHOOT_DOWN_MAX_SIZE> &pages_queue, core_id_t init_id, int app_id); //向 buffer 中添加 TLB shootdown 请求
+      void enqueueTLBShootdownRequest(std::array<IntPtr, TLB_SHOOT_DOWN_MAX_SIZE> &pages_queue, core_id_t init_id, int app_id, int page_num); //向 buffer 中添加 TLB shootdown 请求
       void processTLBShootdownBuffer(bool processing_remote_only); // 处理 buffer 中的 TLB shootdown 请求
       void handleRemoteTLBShootdownRequest(TLBShootdownRequest &request);
       void handleMsgFromOtherCore(core_id_t sender, PrL1PrL2DramDirectoryMSI::ShmemMsg *shmem_msg);

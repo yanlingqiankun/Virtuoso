@@ -90,7 +90,7 @@ MimicOS::~MimicOS()
  * is correctly padded (filled with 0s if not full).
  * @return core_id_t The ID of the core that issued this request.
  */
-core_id_t MimicOS::flushTLB(int app_id, array<IntPtr, TLB_SHOOT_DOWN_MAX_SIZE> page_batch)
+core_id_t MimicOS::flushTLB(int app_id, array<IntPtr, TLB_SHOOT_DOWN_MAX_SIZE> page_batch, int page_num)
 {
     CoreManager *core_manager = Sim()->getCoreManager();
     UInt32 total_cores = Sim()->getConfig()->getTotalCores();
@@ -101,7 +101,7 @@ core_id_t MimicOS::flushTLB(int app_id, array<IntPtr, TLB_SHOOT_DOWN_MAX_SIZE> p
 
     // Assume page_batch has been prepared (padded) by move_pages
     // Send this batch of TLB Shootdown requests
-    issuer_core->enqueueTLBShootdownRequest(page_batch, issuer_core_id, app_id);
+    issuer_core->enqueueTLBShootdownRequest(page_batch, issuer_core_id, app_id, page_num);
 
     return issuer_core_id;
 }
@@ -205,7 +205,7 @@ bool MimicOS::move_pages(std::queue<Hemem::hemem_page*> src_pages_queue,
             // --- Step 3: Flush Cache & TLB (Flush Cache & TLB Shootdown) [Blocking] ---
             // Pass the pre-filled array directly
             // cout << "flush tlb : 0x" << batch_vaddrs_array[0] << endl;
-            issuer_core_id = flushTLB(app_id, batch_vaddrs_array);
+            issuer_core_id = flushTLB(app_id, batch_vaddrs_array, batch_count);
 
             // --- At this point, TLBs for this batch are clean ---
 

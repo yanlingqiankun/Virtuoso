@@ -12,7 +12,7 @@
 #include "stats.h"
 #include "mimicos.h"
 
-#define DEBUG_MMU
+// #define DEBUG_MMU
 
 namespace ParametricDramDirectoryMSI
 {

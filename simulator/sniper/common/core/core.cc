@@ -656,7 +656,8 @@ void Core::networkHandleTLBShootdownRequest(PrL1PrL2DramDirectoryMSI::ShmemMsg *
     enqueueTLBShootdownRequest(
        payload->addrs,
        shmem_msg->getRequester(),
-       payload->app_id
+       payload->app_id,
+       payload->page_num
        );
 }
 
@@ -673,15 +674,14 @@ void Core::networkHandleTLBShootdownAck(PrL1PrL2DramDirectoryMSI::ShmemMsg *shme
       core_id_t from_core = shmem_msg->getRequester();
       SubsecondTime msg_time = getShmemPerfModel()->getElapsedTime(ShmemPerfModel::_SIM_THREAD);
 
-      Semaphore* sem_to_signal = nullptr;
 #ifdef TLB_SHOOTDOWN_DEBUG
       cout << "core " << getId() << " dealing reply of 0x" << request_id << endl;
 #endif
       cout << "core " << getId() << " receive of 0x" << request_id << " : [ ";
 
-      for (int i = 0; i < TLB_SHOOT_DOWN_SIZE; ++i) {
+      for (int i = 0; i < payload->page_num; ++i) {
          auto res = payload->flush_result[i];
-         cout << (res ? "1" : "0"); // 或者直接 cout << res; 也就是输出 0或1
+         cout << (res ? "1" : "0");
       }
       cout << " ]" << endl;
 
@@ -719,7 +719,7 @@ void Core::networkHandleTLBShootdownAck(PrL1PrL2DramDirectoryMSI::ShmemMsg *shme
  * It can be called by the local OS thread (to initiate a broadcast)
  * or by the network thread (in response to a broadcast).
  */
-void Core::enqueueTLBShootdownRequest(std::array<IntPtr, TLB_SHOOT_DOWN_MAX_SIZE> &pages_array, core_id_t init_id, int app_id)
+void Core::enqueueTLBShootdownRequest(std::array<IntPtr, TLB_SHOOT_DOWN_MAX_SIZE> &pages_array, core_id_t init_id, int app_id, int page_num)
 {
     ScopedLock sl(m_tlb_shootdown_buffer_lock);
 
@@ -729,6 +729,7 @@ void Core::enqueueTLBShootdownRequest(std::array<IntPtr, TLB_SHOOT_DOWN_MAX_SIZE
     request.initiator_core_id = init_id;
     request.timestamp = getPerformanceModel()->getElapsedTime();
     request.id = pages_array.front(); // Use the first page address as a unique ID
+    request.pages_num = page_num;
 
     m_tlb_shootdown_buffer.push(request);
 }
@@ -804,6 +805,7 @@ void Core::handleRemoteTLBShootdownRequest(TLBShootdownRequest &request)
    TLBShootdownAckPayload ack_payload{};
    ack_payload.request_id = request.id;
    ack_payload.flush_result = flush_result;
+   ack_payload.page_num = request.pages_num;
 #ifdef TLB_SHOOTDOWN_DEBUG
       cout << "core "<< getId() << " send TLB shootdown reply = 0x" << request.addrs.at(0) << endl;
 #endif
@@ -829,7 +831,6 @@ void Core::initiateTLBShootdownBroadcast(TLBShootdownRequest &request)
        for (int i = 0; i < TLB_SHOOT_DOWN_SIZE; i++) {
           getMemoryManager()->flushCachePage(request.addrs.at(i), MemComponent::L1_DCACHE);
        }
-       auto *wait_sem = new Semaphore(0); // 1. Create a semaphore with initial value 0
        int num_to_wait_for = 0;
 
        // 2. Create pending shootdown record
@@ -848,7 +849,6 @@ void Core::initiateTLBShootdownBroadcast(TLBShootdownRequest &request)
                }
            }
 
-          pending.sem = wait_sem; // Store the semaphore in the record
           num_to_wait_for = pending.pending_cores.size(); // Record how many ACKs to wait for
 
           m_pending_shootdowns[request.id] = pending;
@@ -864,6 +864,7 @@ void Core::initiateTLBShootdownBroadcast(TLBShootdownRequest &request)
          payload.app_id = request.app_id;
          payload.request_id = request.id;
          payload.addrs = request.addrs;
+         payload.page_num = request.pages_num;
          getMemoryManager()->broadcastMsg(
             PrL1PrL2DramDirectoryMSI::ShmemMsg::TLB_SHOOTDOWN_REQ,
             MemComponent::CORE, MemComponent::CORE,
@@ -908,7 +909,6 @@ void Core::initiateTLBShootdownBroadcast(TLBShootdownRequest &request)
          }
       }
 
-      delete wait_sem;
        {
           ScopedLock sl(m_pending_shootdowns_lock);
           m_pending_shootdowns.erase(request.id); // Remove the record from the map

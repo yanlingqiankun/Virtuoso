@@ -5,7 +5,7 @@
 #include "mimicos.h"
 
 // #define DEBUG
-#define SAMPLE_DEBUG
+// #define SAMPLE_DEBUG
 namespace ParametricDramDirectoryMSI
 {
 
