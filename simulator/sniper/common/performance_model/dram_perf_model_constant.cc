@@ -10,11 +10,19 @@ DramPerfModelConstant::DramPerfModelConstant(core_id_t core_id,
    DramPerfModel(core_id, cache_block_size),
    m_queue_model(NULL),
    m_dram_bandwidth(8 * Sim()->getCfg()->getFloat("perf_model/dram/per_controller_bandwidth")), // Convert bytes to bits
+   m_nvm_bandwidth(Sim()->getCfg()->getInt("migration/tiered_memory") == 1 ?
+                8 * Sim()->getCfg()->getFloat("perf_model/nvm/per_controller_bandwidth") :
+                0.0),
    m_total_queueing_delay(SubsecondTime::Zero()),
    m_total_access_latency(SubsecondTime::Zero())
 {
    m_dram_access_cost = SubsecondTime::FS() * static_cast<uint64_t>(TimeConverter<float>::NStoFS(Sim()->getCfg()->getFloat("perf_model/dram/latency"))); // Operate in fs for higher precision before converting to uint64_t/SubsecondTime
-
+   if (Sim()->getCfg()->getInt("migration/tiered_memory") == 1) {
+      m_nvm_access_cost = SubsecondTime::FS() * static_cast<uint64_t>(TimeConverter<float>::NStoFS(Sim()->getCfg()->getFloat("perf_model/nvm/latency")));
+      dram_size = Sim()->getCfg()->getInt("perf_model/hemem_allocator/dram_size");
+   } else {
+      m_nvm_access_cost = SubsecondTime::Zero();
+   }
    if (Sim()->getCfg()->getBool("perf_model/dram/queue_model/enabled"))
    {
       m_queue_model = QueueModel::create("dram-queue", core_id, Sim()->getCfg()->getString("perf_model/dram/queue_model/type"),
@@ -46,7 +54,7 @@ DramPerfModelConstant::getAccessLatency(SubsecondTime pkt_time, UInt64 pkt_size,
    }
 
    SubsecondTime processing_time = m_dram_bandwidth.getRoundedLatency(8 * pkt_size); // bytes to bits
-
+   SubsecondTime memory_access_cost = SubsecondTime::Zero();
    // Compute Queue Delay
    SubsecondTime queue_delay;
    if (m_queue_model)
@@ -57,14 +65,19 @@ DramPerfModelConstant::getAccessLatency(SubsecondTime pkt_time, UInt64 pkt_size,
    {
       queue_delay = SubsecondTime::Zero();
    }
+   if (address <= dram_size) {
+      memory_access_cost = m_dram_access_cost;
+   } else {
+      memory_access_cost = m_nvm_access_cost;
+   }
 
-   SubsecondTime access_latency = queue_delay + processing_time + m_dram_access_cost;
+   SubsecondTime access_latency = queue_delay + processing_time + memory_access_cost;
 
 
    perf->updateTime(pkt_time);
    perf->updateTime(pkt_time + queue_delay, ShmemPerf::DRAM_QUEUE);
    perf->updateTime(pkt_time + queue_delay + processing_time, ShmemPerf::DRAM_BUS);
-   perf->updateTime(pkt_time + queue_delay + processing_time + m_dram_access_cost, ShmemPerf::DRAM_DEVICE);
+   perf->updateTime(pkt_time + queue_delay + processing_time + memory_access_cost, ShmemPerf::DRAM_DEVICE);
 
    // Update Memory Counters
    m_num_accesses ++;

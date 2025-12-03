@@ -25,6 +25,7 @@ class DramPerfModel
    protected:
       bool m_enabled;
       UInt64 m_num_accesses;
+      size_t dram_size;
 
    public:
       static DramPerfModel* createDramPerfModel(core_id_t core_id, UInt32 cache_block_size,AddressHomeLookup* address_home_lookup);

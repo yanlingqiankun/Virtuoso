@@ -23,6 +23,8 @@
 
 #include <boost/algorithm/string.hpp>
 
+#include "mimicos.h"
+
 const char *SyscallMdl::futex_names[] =
 {
    "FUTEX_WAIT", "FUTEX_WAKE", "FUTEX_FD", "FUTEX_REQUEUE",
@@ -296,6 +298,12 @@ bool SyscallMdl::runEnter(IntPtr syscall_number, syscall_args_t &args)
          m_emulated = false;
          break;
       }
+      case SYS_move_pages:
+      {
+         m_ret_val = handleMovePagesCall(args);
+         m_emulated = true;
+         break;
+      }
 
       case static_cast<unsigned long>(-1):
       default:
@@ -398,6 +406,159 @@ IntPtr SyscallMdl::handleFutexCall(syscall_args_t &args)
    futexCount(cmd, delay);
 
    return ret_val;
+}
+
+// IntPtr SyscallMdl::handleMovePagesCall(syscall_args_t &args)
+// {
+//    // 1. parse parameter
+//    // long move_pages(int pid, unsigned long count, void **pages, const int *nodes, int *status, int flags);
+//    // args.arg0 -> pid (ignore)
+//    unsigned long count = (unsigned long)args.arg1;
+//    IntPtr pages_ptr_arr = args.arg2; // void **pages
+//    IntPtr nodes_ptr_arr = args.arg3; // const int *nodes
+//    IntPtr status_ptr_arr = args.arg4; // int *status
+//    int flags = (int)args.arg5;
+//
+//    if (count == 0) return 0;
+//
+//    // 2. prepare buffer
+//    std::vector<IntPtr> pages_addrs(count);
+//    std::vector<int> target_nodes(count);
+//    std::vector<int> status_results(count);
+//
+//    Core *core = m_thread->getCore();
+//
+//    // 3. get pages from real memory (void **)
+//    if (pages_ptr_arr != 0) {
+//       core->accessMemory(Core::NONE, Core::READ, pages_ptr_arr, (char*)pages_addrs.data(), count * sizeof(IntPtr));
+//    } else {
+//       return -EFAULT;
+//    }
+//
+//    // 4. get nodes array from real memory (int *)
+//    if (nodes_ptr_arr != 0) {
+//       core->accessMemory(Core::NONE, Core::READ, nodes_ptr_arr, (char*)target_nodes.data(), count * sizeof(int));
+//    } else {
+//       return -EFAULT;
+//    }
+//
+//    // 5. iterate and move
+//    const int DRAM_NODE = 0;
+//    const int NVM_NODE = 1;
+//
+//    std::cout << "[SyscallMdl] move_pages called with count=" << count << std::endl;
+//
+//    for (unsigned long i = 0; i < count; ++i) {
+//       IntPtr vaddr = pages_addrs[i];
+//       int target_node = target_nodes[i];
+//
+//       std::cout << "  Page[" << i << "]: 0x" << std::hex << vaddr << std::dec
+//                 << " -> Node " << target_node << std::endl;
+//
+//       status_results[i] = 0;
+//    }
+//
+//    // 6. store status to app's memory
+//    if (status_ptr_arr != 0) {
+//       core->accessMemory(Core::NONE, Core::WRITE, status_ptr_arr, (char*)status_results.data(), count * sizeof(int));
+//    }
+//
+//    return 0;
+// }
+
+IntPtr SyscallMdl::handleMovePagesCall(syscall_args_t &args)
+{
+   // 1. Parse Parameters
+   // long move_pages(int pid, unsigned long count, void **pages, const int *nodes, int *status, int flags);
+   // args.arg0 -> pid (ignored, assuming 0/self)
+   unsigned long count = (unsigned long)args.arg1;
+   IntPtr pages_ptr_arr = args.arg2; // void **pages
+   IntPtr nodes_ptr_arr = args.arg3; // const int *nodes
+   IntPtr status_ptr_arr = args.arg4; // int *status
+   // int flags = (int)args.arg5; // flags (ignored for now)
+
+   if (count == 0) return 0;
+
+   // 2. Prepare Buffers
+   std::vector<IntPtr> pages_addrs(count);
+   std::vector<int> target_nodes(count);
+   std::vector<int> status_results(count);
+
+   Core *core = m_thread->getCore();
+
+   // 3. Read 'pages' array from Application Memory (void **)
+   if (pages_ptr_arr != 0) {
+      core->accessMemory(Core::NONE, Core::READ, pages_ptr_arr, (char*)pages_addrs.data(), count * sizeof(IntPtr));
+   } else {
+      // pages == NULL means "pages mapped at address NULL" which is rare/invalid usually,
+      // or "use existing mapping" (but move_pages requires explicit addresses).
+      // Returning EFAULT is safer.
+      return -EFAULT;
+   }
+
+   // 4. Read 'nodes' array from Application Memory (int *)
+   if (nodes_ptr_arr != 0) {
+      core->accessMemory(Core::NONE, Core::READ, nodes_ptr_arr, (char*)target_nodes.data(), count * sizeof(int));
+   } else {
+      return -EFAULT;
+   }
+
+   // 5. Prepare Queues for MimicOS
+   std::queue<IntPtr> src_pages_queue;
+   std::queue<bool> migrate_up_queue;
+
+   // Define Node mapping (Align with your simulation config)
+   // Assuming: Node 0 = DRAM (Fast/Up), Node 1 = NVM (Slow/Down)
+   const int DRAM_NODE = 0;
+   const int NVM_NODE = 1;
+
+   // std::cout << "[SyscallMdl] move_pages called with count=" << count << std::endl;
+
+   for (unsigned long i = 0; i < count; ++i) {
+      IntPtr vaddr = pages_addrs[i];
+      int target_node = target_nodes[i];
+
+      // Determine migration direction
+      bool migrate_up = false;
+
+      // Basic validation logic
+      if (target_node == DRAM_NODE) {
+          migrate_up = true;
+      } else if (target_node == NVM_NODE) {
+          migrate_up = false;
+      } else {
+          // Invalid node or current node (no-op).
+          // For simplicity, we assume any non-DRAM node request is a demotion to NVM.
+          // Or you can set status_results[i] = -ENOENT here and skip pushing to queue.
+          migrate_up = false;
+      }
+
+      src_pages_queue.push(vaddr);
+      migrate_up_queue.push(migrate_up);
+
+      // Initialize status to success (will be overwritten if MimicOS returns specific errors,
+      // but current move_pages_syscall returns boolean)
+      status_results[i] = 0;
+   }
+
+   // 6. Invoke MimicOS Simulation Logic
+   // Use the wrapper function we created earlier
+   int app_id = m_thread->getAppId(); // Or 0 if single app
+   bool success = Sim()->getMimicOS()->move_pages_syscall(src_pages_queue, migrate_up_queue, app_id);
+
+   if (!success) {
+       // If the whole operation failed (e.g., allocator error), you might want to return an error code
+       // or set specific status codes. For now, we warn.
+       std::cout << "[SyscallMdl] Warning: MimicOS move_pages_syscall returned false." << std::endl;
+       // You could set status_results to -EIO or similar here if desired.
+   }
+
+   // 7. Write 'status' array back to Application Memory
+   if (status_ptr_arr != 0) {
+      core->accessMemory(Core::NONE, Core::WRITE, status_ptr_arr, (char*)status_results.data(), count * sizeof(int));
+   }
+
+   return 0;
 }
 
 String SyscallMdl::formatSyscall() const

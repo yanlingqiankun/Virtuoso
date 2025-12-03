@@ -14,6 +14,9 @@ class DramPerfModelConstant : public DramPerfModel
       SubsecondTime m_dram_access_cost;
       ComponentBandwidth m_dram_bandwidth;
 
+      SubsecondTime m_nvm_access_cost;
+      ComponentBandwidth m_nvm_bandwidth;
+
       SubsecondTime m_total_queueing_delay;
       SubsecondTime m_total_access_latency;
 

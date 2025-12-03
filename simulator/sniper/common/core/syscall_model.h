@@ -49,6 +49,7 @@ class SyscallMdl
       IntPtr getCurrentSyscallNumber() const { return m_syscall_number; }
       const syscall_args_t getCurrentSyscallArguments() const { return m_syscall_args; }
       String formatSyscall() const;
+      IntPtr handleMovePagesCall(syscall_args_t &args);
 
    private:
       static const char *futex_names[];

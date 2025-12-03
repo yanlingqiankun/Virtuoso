@@ -253,6 +253,15 @@ namespace Hemem {
         }
     }
 
+    hemem_page_t* Memtis::getPage(IntPtr vaddr) {
+        std::lock_guard<std::mutex> lock(page_list_mutex);
+        auto it = all_pages_map.find(vaddr);
+        if (it != all_pages_map.end()) {
+            return it->second;
+        }
+        return nullptr;
+    }
+
     void Memtis::batch_migrate(const std::vector<hemem_page_t*>& to_promote,
                                const std::vector<hemem_page_t*>& to_demote) {
         std::queue<hemem_page_t*> q;

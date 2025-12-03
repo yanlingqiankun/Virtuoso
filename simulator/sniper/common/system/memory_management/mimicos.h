@@ -10,6 +10,8 @@
 #include "subsecond_time.h"
 #include <unordered_map>
 
+#include "page_migration/memtis.h"
+
 using namespace std;
 
 class MimicOS
@@ -94,4 +96,5 @@ public:
     core_id_t flushTLB(int app_id, array<IntPtr, TLB_SHOOT_DOWN_MAX_SIZE> addrs, int page_num);
     bool move_pages(std::queue<Hemem::hemem_page*> pages, std::queue<bool> migrate_up, int app_id);
     void DMA_migrate(IntPtr move_id, subsecond_time_t finish_time, int app_id = 0);
+    bool move_pages_syscall(std::queue<IntPtr> src_pages_address_queue, std::queue<bool> migrate_up_queue, int app_id);
 };

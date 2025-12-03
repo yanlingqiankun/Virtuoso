@@ -93,6 +93,7 @@ namespace Hemem {
         // Configuration setters
         void setBatchSize(size_t size) override;
         void setHotThreshold(UInt64 threshold);
+        hemem_page_t* getPage(IntPtr vaddr);
     };
 }
 

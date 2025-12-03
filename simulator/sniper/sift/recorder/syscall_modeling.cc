@@ -174,6 +174,10 @@ VOID emulateSyscallFunc(THREADID threadid, CONTEXT *ctxt)
          case SYS_exit_group:
             thread_data[threadid].output->Syscall(syscall_number, (char*)args, sizeof(args));
             break;
+         case SYS_move_pages:
+            thread_data[threadid].last_syscall_number = syscall_number;
+            thread_data[threadid].last_syscall_emulated = true;
+            thread_data[threadid].last_syscall_returnval = thread_data[threadid].output->Syscall(syscall_number, (char*)args, sizeof(args));
       }
    }
 }

@@ -246,6 +246,76 @@ bool MimicOS::move_pages(std::queue<Hemem::hemem_page*> src_pages_queue,
     return all_succeeded;
 }
 
+/**
+ * @brief Wrapper for move_pages to handle raw virtual addresses from syscalls.
+ * It translates virtual addresses to hemem_page pointers and calls the internal move_pages.
+ * * @param src_pages_address_queue Queue of virtual addresses to migrate.
+ * @param migrate_up_queue Queue of directions (true = up/DRAM, false = down/NVM).
+ * @param app_id Application ID.
+ * @return true if successful, false otherwise.
+ */
+bool MimicOS::move_pages_syscall(std::queue<IntPtr> src_pages_address_queue,
+                                 std::queue<bool> migrate_up_queue,
+                                 int app_id)
+{
+    // 1. Basic Validation
+    if (src_pages_address_queue.size() != migrate_up_queue.size()) {
+        std::cerr << "[MimicOS] Error: move_pages_syscall address queue and direction queue size mismatch." << std::endl;
+        return false;
+    }
+
+    if (!page_migration_handler) {
+        std::cerr << "[MimicOS] Error: No page migration handler attached. Cannot lookup page metadata." << std::endl;
+        return false;
+    }
+
+    // 2. Containers for converted data
+    std::queue<Hemem::hemem_page*> internal_pages_queue;
+    std::queue<bool> valid_directions_queue;
+
+    int total_requested = src_pages_address_queue.size();
+    int valid_pages = 0;
+
+    // 3. Translation Loop (Vaddr -> hemem_page*)
+    while (!src_pages_address_queue.empty()) {
+        IntPtr vaddr = src_pages_address_queue.front();
+        bool direction = migrate_up_queue.front();
+
+        src_pages_address_queue.pop();
+        migrate_up_queue.pop();
+
+        // 3.1 Align address to page boundary (robustness)
+        // Assuming base page size (4KB) for lookup key
+        IntPtr aligned_vaddr = vaddr & (~(4095ULL));
+
+        // 3.2 Lookup the internal page structure
+        // This relies on the getPage() interface added to PageMigration
+        Hemem::hemem_page* page = dynamic_cast<Hemem::Memtis*>(page_migration_handler)->getPage(aligned_vaddr);
+
+        if (page != nullptr) {
+            internal_pages_queue.push(page);
+            valid_directions_queue.push(direction);
+            valid_pages++;
+        } else {
+            // Option: Log warning for pages not found (e.g., not faulted in yet)
+            // std::cout << "[MimicOS] Warning: move_pages_syscall could not find metadata for vaddr 0x"
+            //           << std::hex << vaddr << std::dec << ". Skipping." << std::endl;
+        }
+    }
+
+    // 4. Call the internal implementation
+    if (internal_pages_queue.empty()) {
+        // If no valid pages were found, return true (nothing to do is technically a success)
+        // or false depending on strictness requirements.
+        return true;
+    }
+
+    // std::cout << "[MimicOS] move_pages_syscall: Translating " << valid_pages
+    //           << " / " << total_requested << " requests to internal migration." << std::endl;
+
+    return move_pages(internal_pages_queue, valid_directions_queue, app_id);
+}
+
 void MimicOS::DMA_migrate(IntPtr move_id, subsecond_time_t finish_time, int app_id) {
 
     // 1. Find the batch in the map
