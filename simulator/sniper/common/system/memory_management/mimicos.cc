@@ -72,6 +72,7 @@ MimicOS::MimicOS(bool _is_guest) : m_page_fault_latency(NULL, 0), tlb_flush_late
             std::cout << "[MimicOS] Page migration handler disabled" << std::endl;
         }
     } else {
+        page_migration_handler = nullptr;
         std::cout << "[MimicOS] Page migration disabled" << std::endl;
     }
 }

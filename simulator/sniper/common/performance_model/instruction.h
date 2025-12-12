@@ -29,6 +29,7 @@ enum InstructionType
    INST_SPAWN,
    INST_TLB_MISS,
    INST_PAGEFAULT,
+   INST_MOVE_PAGES,
    INST_MEM_ACCESS, // Not a regular memory access.  These are added latencies and do not correspond to a particular instruction.  Dynamic Instruction
    INST_DELAY,
    INST_UNKNOWN,
@@ -209,6 +210,14 @@ public:
       : PseudoInstruction(cost, INST_PAGEFAULT), m_is_fence(true) {}
       bool isFence() const { return m_is_fence; }
    
+};
+
+class MovePagesSyscallInstruction : public PseudoInstruction {
+   bool m_is_fence;
+public:
+   MovePagesSyscallInstruction(SubsecondTime cost)
+      :PseudoInstruction(cost, INST_MOVE_PAGES), m_is_fence(true) {}
+   bool isFence() const { return m_is_fence; }
 };
 
 class MemAccessInstruction : public PseudoInstruction
