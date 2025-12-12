@@ -37,7 +37,7 @@ enum InstructionType
 };
 
 __attribute__ ((unused)) static const char * INSTRUCTION_NAMES [] =
-{"generic","add","sub","mul","div","fadd","fsub","fmul","fdiv","jmp","branch", "dynamic_misc","recv","sync","spawn","tlb_miss","page_fault","mem_access","delay","unknown"};
+{"generic","add","sub","mul","div","fadd","fsub","fmul","fdiv","jmp","branch", "dynamic_misc","recv","sync","spawn","tlb_miss","page_fault", "move_page","mem_access","delay","unknown"};
 
 class Instruction
 {
