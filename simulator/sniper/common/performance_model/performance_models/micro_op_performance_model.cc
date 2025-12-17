@@ -444,8 +444,7 @@ void MicroOpPerformanceModel::handleInstruction(DynamicInstruction *dynins)
       if (dynins->instruction->getType() == INST_PAGEFAULT)
       {
          m_cpiUnknown += insn_cost;
-      }
-      if (dynins->instruction->getType() == INST_MOVE_PAGES) {
+      }else if (dynins->instruction->getType() == INST_MOVE_PAGES) {
          m_cpiUnknown += insn_cost;
       }
       else if (dynins->instruction->getType() == INST_UNKNOWN)

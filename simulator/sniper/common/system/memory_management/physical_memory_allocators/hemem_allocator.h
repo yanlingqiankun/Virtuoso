@@ -10,6 +10,9 @@
 #include "fixed_types.h"
 #include <mutex>
 #include <queue>
+#include <unordered_map>
+#include "buddy_allocator.h"
+#include "physical_memory_allocator.h"
 
 #include "../page_migration/hemem.h"
 
@@ -29,11 +32,20 @@ public:
     void deallocatePages(std::queue<Hemem::hemem_page*> pages, std::queue<bool> is_dram, UInt64 app_id);
 
 private:
-    Hemem::fifo_list dram_free_list;
-    Hemem::fifo_list nvm_free_list;
+    Buddy *dram_buddy;
+    Buddy *nvm_buddy;
+    std::unordered_map<UInt64, Hemem::hemem_page*> m_active_pages;
+    // Hemem::fifo_list dram_free_list;
+    // Hemem::fifo_list nvm_free_list;
     int page_size = 4096;
     std::mutex mutex_alloc;
     UInt64 dram_reserved_threshold;
+    UInt64 m_dram_size_bytes;
+    UInt64 m_nvm_size_bytes;
+    UInt64 m_kernel_size_bytes;
+
+    Hemem::hemem_page* create_active_page(UInt64 phy_addr, bool is_dram);
+    void destroy_active_page(UInt64 phy_addr);
 };
 
 #endif //HEMEM_ALLOCATOR_H

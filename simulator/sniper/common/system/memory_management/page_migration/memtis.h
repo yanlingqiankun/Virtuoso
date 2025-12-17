@@ -13,6 +13,7 @@
 #include <random>
 #include <map>
 #include <set>
+#include <shared_mutex>
 
 namespace Hemem {
 
@@ -49,7 +50,7 @@ namespace Hemem {
         std::thread policy_thread_handle;
 
         // Mutex to protect global lists (dram_pages, nvm_pages) and the map.
-        std::mutex page_list_mutex;
+        std::shared_mutex page_list_mutex;
 
         // --- Lazy Cooling State ---
 

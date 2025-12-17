@@ -55,7 +55,7 @@ namespace Hemem {
                 page->naccesses = 0;
             } else {
                 // Decay hotness: Divide by 2^delta (Right shift)
-                // This simulates the periodic halving in Memtis[cite: 372].
+                // This simulates the periodic halving in Memtis
                 page->naccesses >>= delta;
             }
             // Sync page time to global time
@@ -73,7 +73,7 @@ namespace Hemem {
 
     void Memtis::page_fault(UInt64 laddr, void *ptr) {
         hemem_page_t *page = static_cast<hemem_page_t *>(ptr);
-        std::lock_guard<std::mutex> lock(page_list_mutex);
+        std::unique_lock<std::shared_mutex> lock(page_list_mutex);
 
         auto const& [it, inserted] = all_pages_map.insert({laddr, page});
         if (inserted) {
@@ -106,14 +106,16 @@ namespace Hemem {
 
                     // Calculate Base Page address
                     UInt64 addr = page_sample.addr & pages_mask[0];
+                    hemem_page_t *page = nullptr;
+                    {
+                        std::shared_lock<std::shared_mutex> lock(page_list_mutex);
+                        // Fast lock-free lookup (assuming map stability)
+                        auto it = all_pages_map.find(addr);
+                        if (it == all_pages_map.end()) continue;
 
-                    // Fast lock-free lookup (assuming map stability)
-                    auto it = all_pages_map.find(addr);
-                    if (it == all_pages_map.end()) continue;
-
-                    hemem_page_t *page = it->second;
-                    // cout << "find pages = " << page->vaddr << endl;
-
+                        page = it->second;
+                        // cout << "find pages = " << page->vaddr << endl;
+                    }
                     // 1. Lazy Cool: Before adding new access, decay the old value based on elapsed time.
                     lazy_cool(page, current_epoch.load(std::memory_order_relaxed));
 
@@ -174,7 +176,7 @@ namespace Hemem {
 
             // 3. Select Victims in DRAM via Random Sampling + Sorting
             {
-                std::lock_guard<std::mutex> list_lock(page_list_mutex);
+                std::unique_lock<std::shared_mutex> list_lock(page_list_mutex);
 
                 if (!dram_pages.empty()) {
                     std::vector<hemem_page_t*> dram_sample;
@@ -213,7 +215,7 @@ namespace Hemem {
                 batch_migrate(to_promote, to_demote);
 
                 // 5. Maintenance: Update Global Lists after Migration
-                std::lock_guard<std::mutex> list_lock(page_list_mutex);
+                std::unique_lock<std::shared_mutex>list_lock(page_list_mutex);
                 std::lock_guard<std::mutex> q_lock(queue_mutex); // Lock needed to clear pending_pages
 
                 // Helper lambdas
@@ -254,7 +256,7 @@ namespace Hemem {
     }
 
     hemem_page_t* Memtis::getPage(IntPtr vaddr) {
-        std::lock_guard<std::mutex> lock(page_list_mutex);
+        std::shared_lock<std::shared_mutex> lock(page_list_mutex);
         auto it = all_pages_map.find(vaddr);
         if (it != all_pages_map.end()) {
             return it->second;

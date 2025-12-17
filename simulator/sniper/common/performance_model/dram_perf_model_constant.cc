@@ -21,6 +21,7 @@ DramPerfModelConstant::DramPerfModelConstant(core_id_t core_id,
       m_nvm_access_cost = SubsecondTime::FS() * static_cast<uint64_t>(TimeConverter<float>::NStoFS(Sim()->getCfg()->getFloat("perf_model/nvm/latency")));
       dram_size = Sim()->getCfg()->getInt("perf_model/hemem_allocator/dram_size");
    } else {
+      dram_size = INT64_MAX;
       m_nvm_access_cost = SubsecondTime::Zero();
    }
    if (Sim()->getCfg()->getBool("perf_model/dram/queue_model/enabled"))
