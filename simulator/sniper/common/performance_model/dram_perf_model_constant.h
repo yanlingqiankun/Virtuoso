@@ -20,6 +20,9 @@ class DramPerfModelConstant : public DramPerfModel
       SubsecondTime m_total_queueing_delay;
       SubsecondTime m_total_access_latency;
 
+    UInt64 dram_access;
+    UInt64 nvm_access;
+
    public:
       DramPerfModelConstant(core_id_t core_id,
             UInt32 cache_block_size);

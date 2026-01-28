@@ -158,6 +158,10 @@ bool MimicOS::move_pages(std::queue<Hemem::hemem_page*> src_pages_queue,
         src_pages_queue.pop();
         migrate_up_queue.pop();
 
+        if (src_page->in_dram == current_migrate_up) {
+            continue;
+        }
+
         if (!src_page || src_page->vaddr == 0) {
              all_succeeded = false;
              continue; // Skip invalid source pages

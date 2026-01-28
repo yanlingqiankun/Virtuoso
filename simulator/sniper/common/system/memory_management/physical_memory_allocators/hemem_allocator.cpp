@@ -192,8 +192,9 @@ HememAllocator::HememAllocator(String name, UInt64 dram_size, UInt64 nvm_size, i
     m_nvm_size_bytes = nvm_size * 1024 * 1024;
 
     this->dram_reserved_threshold = (dram_buddy->getTotalPages()) / 10;
+    this->m_preferred_node = Sim()->getCfg()->getInt("perf_model/hemem_allocator/preferred_node");
 
-    std::cout << "[Hemem] Allocator Initialized. Metadata will be created on-demand." << std::endl;
+    std::cout << "[Hemem] Allocator Initialized with preferred mem node "<< this->m_preferred_node <<". Metadata will be created on-demand." << std::endl;
 }
 
 HememAllocator::~HememAllocator() {
@@ -248,25 +249,44 @@ std::pair<UInt64, UInt64> HememAllocator::allocate(UInt64 bytes, UInt64 address,
 
         UInt64 allocated_phy_addr = -1;
         bool is_in_dram = false;
-
-        if (dram_buddy->getFreePages() > this->dram_reserved_threshold) {
-            allocated_phy_addr = dram_buddy->allocate(bytes, 0, core_id);
+        if (m_preferred_node == 0) {
+            // --- preferred node == 0 ---
+            if (dram_buddy->getFreePages() > this->dram_reserved_threshold) {
+                allocated_phy_addr = dram_buddy->allocate(bytes, 0, core_id);
+                if (allocated_phy_addr != static_cast<UInt64>(-1)) {
+                    is_in_dram = true;
+                }
+            }
+            // DRAM is full
+            if (allocated_phy_addr == static_cast<UInt64>(-1)) {
+                allocated_phy_addr = nvm_buddy->allocate(bytes, 0, core_id);
+                if (allocated_phy_addr != static_cast<UInt64>(-1)) {
+                    allocated_phy_addr += m_dram_size_bytes;
+                    is_in_dram = false;
+                }
+            }
+        }
+        else {
+            // --- preferred node == 1 ---
+            allocated_phy_addr = nvm_buddy->allocate(bytes, 0, core_id);
             if (allocated_phy_addr != static_cast<UInt64>(-1)) {
-                is_in_dram = true;
+                allocated_phy_addr += m_dram_size_bytes;
+                is_in_dram = false;
+            }
+            // NVM is full
+            else if (dram_buddy->getFreePages() > this->dram_reserved_threshold) {
+                allocated_phy_addr = dram_buddy->allocate(bytes, 0, core_id);
+                if (allocated_phy_addr != static_cast<UInt64>(-1)) {
+                    is_in_dram = true;
+                }
             }
         }
 
         if (allocated_phy_addr == static_cast<UInt64>(-1)) {
-            allocated_phy_addr = nvm_buddy->allocate(bytes, 0, core_id);
-            if (allocated_phy_addr != static_cast<UInt64>(-1)) {
-                allocated_phy_addr += m_dram_size_bytes; // NVM offset
-                is_in_dram = false;
-            } else {
-                std::cerr << "[Hemem] OUT OF MEMORY!!!!" << std::endl;
-                mutex_alloc.unlock();
-                assert(false);
-                return make_pair(-1, 0);
-            }
+            std::cerr << "[Hemem] OUT OF MEMORY!!!! (NVM first, DRAM fallback failed)" << std::endl;
+            mutex_alloc.unlock();
+            assert(false);
+            return make_pair(-1, 0);
         }
 
         Hemem::hemem_page *page = create_active_page(allocated_phy_addr, is_in_dram);

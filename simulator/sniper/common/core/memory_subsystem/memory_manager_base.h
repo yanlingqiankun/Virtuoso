@@ -116,6 +116,7 @@ public:
    void setPageMigrationEnable(){page_migration_enable = true;}
    virtual bool MMFlushTLB(int appid, IntPtr address, Core::lock_signal_t lock, bool modeled){ return false; }
    virtual void flushCachePage(IntPtr page_address, MemComponent::component_t cache_level) {}
+   virtual void flushEntireL1DCache() {}
 };
 
 #endif /* __MEMORY_MANAGER_BASE_H__ */

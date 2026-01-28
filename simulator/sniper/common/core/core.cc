@@ -828,9 +828,10 @@ void Core::handleRemoteTLBShootdownRequest(TLBShootdownRequest &request)
 void Core::initiateTLBShootdownBroadcast(TLBShootdownRequest &request)
 {
       // 1.Flush local cache
-       for (int i = 0; i < TLB_SHOOT_DOWN_SIZE; i++) {
-          getMemoryManager()->flushCachePage(request.addrs.at(i), MemComponent::L1_DCACHE);
-       }
+       // for (int i = 0; i < TLB_SHOOT_DOWN_SIZE; i++) {
+       //    getMemoryManager()->flushCachePage(request.addrs.at(i), MemComponent::L1_DCACHE);
+       // }
+      getMemoryManager()->flushEntireL1DCache();
        int num_to_wait_for = 0;
 
        // 2. Create pending shootdown record

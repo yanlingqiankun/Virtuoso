@@ -888,4 +888,19 @@ namespace ParametricDramDirectoryMSI
 		}
 	}
 
+	void MemoryManager::flushEntireL1DCache() {
+		CacheCntlr *l1d_cache = m_cache_cntlrs[MemComponent::L1_DCACHE];
+		Cache *cache = l1d_cache->getCache();
+
+		UInt32 num_sets = cache->getNumSets();
+		UInt32 associativity = cache->getAssociativity();
+
+		for (UInt32 set = 0; set < num_sets; set++) {
+			for (UInt32 way = 0; way < associativity; way++) {
+				CacheBlockInfo *block_info = cache->peekBlock(set, way);
+				block_info->invalidate();
+			}
+		}
+	}
+
 }

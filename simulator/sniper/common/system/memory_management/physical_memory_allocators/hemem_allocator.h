@@ -32,6 +32,7 @@ public:
     void deallocatePages(std::queue<Hemem::hemem_page*> pages, std::queue<bool> is_dram, UInt64 app_id);
 
 private:
+    int m_preferred_node = 0; // 0 means dram
     Buddy *dram_buddy;
     Buddy *nvm_buddy;
     std::unordered_map<UInt64, Hemem::hemem_page*> m_active_pages;

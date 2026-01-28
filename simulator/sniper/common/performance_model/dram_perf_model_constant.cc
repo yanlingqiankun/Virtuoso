@@ -19,7 +19,8 @@ DramPerfModelConstant::DramPerfModelConstant(core_id_t core_id,
    m_dram_access_cost = SubsecondTime::FS() * static_cast<uint64_t>(TimeConverter<float>::NStoFS(Sim()->getCfg()->getFloat("perf_model/dram/latency"))); // Operate in fs for higher precision before converting to uint64_t/SubsecondTime
    if (Sim()->getCfg()->getInt("migration/tiered_memory") == 1) {
       m_nvm_access_cost = SubsecondTime::FS() * static_cast<uint64_t>(TimeConverter<float>::NStoFS(Sim()->getCfg()->getFloat("perf_model/nvm/latency")));
-      dram_size = Sim()->getCfg()->getInt("perf_model/hemem_allocator/dram_size");
+      int dram_size_in_MB = Sim()->getCfg()->getInt("perf_model/hemem_allocator/dram_size");
+      dram_size = static_cast<size_t>(dram_size_in_MB) << 20;
    } else {
       dram_size = INT64_MAX;
       m_nvm_access_cost = SubsecondTime::Zero();
@@ -32,6 +33,8 @@ DramPerfModelConstant::DramPerfModelConstant(core_id_t core_id,
 
    registerStatsMetric("dram", core_id, "total-access-latency", &m_total_access_latency);
    registerStatsMetric("dram", core_id, "total-queueing-delay", &m_total_queueing_delay);
+   registerStatsMetric("ddr", core_id, "dram-access", &dram_access);
+   registerStatsMetric("ddr", core_id, "nvm-access", &nvm_access);
 }
 
 DramPerfModelConstant::~DramPerfModelConstant()
@@ -68,8 +71,10 @@ DramPerfModelConstant::getAccessLatency(SubsecondTime pkt_time, UInt64 pkt_size,
    }
    if (address <= dram_size) {
       memory_access_cost = m_dram_access_cost;
+      dram_access ++;
    } else {
       memory_access_cost = m_nvm_access_cost;
+      nvm_access ++;
    }
 
    SubsecondTime access_latency = queue_delay + processing_time + memory_access_cost;
