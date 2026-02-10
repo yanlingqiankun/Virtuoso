@@ -30,8 +30,7 @@ class Thread
       RoutineTracerThread *m_rtn_tracer;
       va2pa_func_t m_va2pa_func;
       UInt64 m_va2pa_arg;
-
-
+      volatile bool m_ipi_pending;  // IPI interrupt pending flag
 
 
    public:
@@ -64,16 +63,16 @@ class Thread
             return logical_address;
       }
 
-      SubsecondTime wait(Lock &lock)
-      {
-         m_wakeup_msg = NULL;
-         m_cond.wait(lock);
-         return m_wakeup_time;
-      }
+      SubsecondTime wait(Lock &lock);  // IPI-aware, implemented in thread.cc
       void signal(SubsecondTime time, void* msg = NULL)
       {
          m_wakeup_time = time;
          m_wakeup_msg = msg;
+         m_cond.signal();
+      }
+      void signalIPI()  // Wake thread for IPI without changing stall state
+      {
+         m_ipi_pending = true;
          m_cond.signal();
       }
       SubsecondTime getWakeupTime() const { return m_wakeup_time; }

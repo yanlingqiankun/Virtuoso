@@ -189,10 +189,13 @@ void ThreadManager::onThreadExit(thread_id_t thread_id)
    thread->setCore(NULL);
    thread->updateCoreTLS();
 
-   Sim()->getStatsManager()->logEvent(StatsManager::EVENT_THREAD_EXIT, SubsecondTime::MaxTime(), core->getId(), thread_id, 0, 0, "");
+   if (Sim() && Sim()->getStatsManager())
+      Sim()->getStatsManager()->logEvent(StatsManager::EVENT_THREAD_EXIT, SubsecondTime::MaxTime(), core->getId(), thread_id, 0, 0, "");
 
-   HooksManager::ThreadTime args = { thread_id: thread_id, time: time };
-   Sim()->getHooksManager()->callHooks(HookType::HOOK_THREAD_EXIT, (UInt64)&args);
+   if (Sim() && Sim()->getHooksManager()) {
+      HooksManager::ThreadTime args = { thread_id: thread_id, time: time };
+      Sim()->getHooksManager()->callHooks(HookType::HOOK_THREAD_EXIT, (UInt64)&args);
+   }
    CLOG("thread", "Exit %d", thread_id);
 }
 

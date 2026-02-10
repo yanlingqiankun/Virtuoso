@@ -195,6 +195,16 @@ HememAllocator::HememAllocator(String name, UInt64 dram_size, UInt64 nvm_size, i
     this->m_preferred_node = Sim()->getCfg()->getInt("perf_model/hemem_allocator/preferred_node");
 
     std::cout << "[Hemem] Allocator Initialized with preferred mem node "<< this->m_preferred_node <<". Metadata will be created on-demand." << std::endl;
+
+    // --- Initialize allocation statistics ---
+    bzero(&alloc_stats, sizeof(alloc_stats));
+    registerStatsMetric(name, 0, "alloc_dram_pages", &alloc_stats.alloc_dram_pages);
+    registerStatsMetric(name, 0, "alloc_nvm_pages", &alloc_stats.alloc_nvm_pages);
+    registerStatsMetric(name, 0, "migration_alloc_dram", &alloc_stats.migration_alloc_dram);
+    registerStatsMetric(name, 0, "migration_alloc_nvm", &alloc_stats.migration_alloc_nvm);
+    registerStatsMetric(name, 0, "dealloc_dram_pages", &alloc_stats.dealloc_dram_pages);
+    registerStatsMetric(name, 0, "dealloc_nvm_pages", &alloc_stats.dealloc_nvm_pages);
+    registerStatsMetric(name, 0, "alloc_failed_oom", &alloc_stats.alloc_failed_oom);
 }
 
 HememAllocator::~HememAllocator() {
@@ -284,6 +294,7 @@ std::pair<UInt64, UInt64> HememAllocator::allocate(UInt64 bytes, UInt64 address,
 
         if (allocated_phy_addr == static_cast<UInt64>(-1)) {
             std::cerr << "[Hemem] OUT OF MEMORY!!!! (NVM first, DRAM fallback failed)" << std::endl;
+            alloc_stats.alloc_failed_oom++;
             mutex_alloc.unlock();
             assert(false);
             return make_pair(-1, 0);
@@ -295,6 +306,13 @@ std::pair<UInt64, UInt64> HememAllocator::allocate(UInt64 bytes, UInt64 address,
 
         page->vaddr = address & BASE_PAGE_MASK;
         Sim()->getMimicOS()->getPageMigrationHandler()->page_fault(address & BASE_PAGE_MASK, page);
+
+        // --- Allocation stats ---
+        if (is_in_dram) {
+            alloc_stats.alloc_dram_pages++;
+        } else {
+            alloc_stats.alloc_nvm_pages++;
+        }
 
         return make_pair(allocated_phy_addr, 12);
     }
@@ -319,6 +337,13 @@ Hemem::hemem_page *HememAllocator::getAFreePage(bool is_dram) {
     }
 
     Hemem::hemem_page *page = create_active_page(phy_addr, is_dram);
+
+    // --- Migration allocation stats ---
+    if (is_dram) {
+        alloc_stats.migration_alloc_dram++;
+    } else {
+        alloc_stats.migration_alloc_nvm++;
+    }
 
     mutex_alloc.unlock();
     return page;
@@ -347,7 +372,15 @@ std::queue<Hemem::hemem_page*> HememAllocator::getFreePages(std::queue<bool> is_
         if (phy_addr == static_cast<UInt64>(-1)) break;
 
         // 按需创建
-        ret.push(create_active_page(phy_addr, is_dram));
+        Hemem::hemem_page* page = create_active_page(phy_addr, is_dram);
+        ret.push(page);
+
+        // --- Migration allocation stats ---
+        if (is_dram) {
+            alloc_stats.migration_alloc_dram++;
+        } else {
+            alloc_stats.migration_alloc_nvm++;
+        }
     }
 
     mutex_alloc.unlock();
@@ -362,9 +395,11 @@ void HememAllocator::deallocate(UInt64 region_begin, UInt64 core_id)
 
     if (region_begin < m_dram_size_bytes) {
         dram_buddy->free(region_begin, region_end);
+        alloc_stats.dealloc_dram_pages++;
     } else {
         if (region_begin >= m_dram_size_bytes) {
             nvm_buddy->free(region_begin - m_dram_size_bytes, region_end - m_dram_size_bytes);
+            alloc_stats.dealloc_nvm_pages++;
         }
     }
 
@@ -384,10 +419,12 @@ void HememAllocator::deallocate(Hemem::hemem_page *page, bool is_dram, UInt64 co
     if (is_dram) {
         if (start_addr < m_dram_size_bytes) {
             dram_buddy->free(start_addr, end_addr);
+            alloc_stats.dealloc_dram_pages++;
         }
     } else {
         if (start_addr >= m_dram_size_bytes) {
             nvm_buddy->free(start_addr - m_dram_size_bytes, end_addr - m_dram_size_bytes);
+            alloc_stats.dealloc_nvm_pages++;
         }
     }
 
@@ -410,11 +447,15 @@ void HememAllocator::deallocatePages(std::queue<Hemem::hemem_page*> pages, std::
         UInt64 end_addr = start_addr + PAGE_SIZE - 1;
 
         if (is_dram) {
-             if (start_addr < m_dram_size_bytes)
+             if (start_addr < m_dram_size_bytes) {
                 dram_buddy->free(start_addr, end_addr);
+                alloc_stats.dealloc_dram_pages++;
+             }
         } else {
-             if (start_addr >= m_dram_size_bytes)
+             if (start_addr >= m_dram_size_bytes) {
                 nvm_buddy->free(start_addr - m_dram_size_bytes, end_addr - m_dram_size_bytes);
+                alloc_stats.dealloc_nvm_pages++;
+             }
         }
 
         page->present = false;

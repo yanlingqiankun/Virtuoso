@@ -8,7 +8,9 @@
 #include "pagetable.h"
 #include "rangetable.h"
 #include "subsecond_time.h"
+#include "stats.h"
 #include <unordered_map>
+#include <mutex>
 
 #include "page_migration/memtis.h"
 
@@ -57,6 +59,25 @@ private:
     ComponentLatency ipi_handle_latency;
 
     map<IntPtr,pair<array<IntPtr, TLB_SHOOT_DOWN_MAX_SIZE>,array<IntPtr, TLB_SHOOT_DOWN_MAX_SIZE>>> DMA_map; // request_id -> <virtual addr, new physical addr>
+    std::mutex m_dma_map_lock;
+
+    bool one_app;
+
+    // Page migration statistics
+    struct MigrationStats
+    {
+        UInt64 move_pages_calls;             // Number of move_pages() invocations
+        UInt64 move_pages_syscall_calls;     // Number of move_pages_syscall() invocations
+        UInt64 total_migrations_requested;   // Total pages submitted for migration
+        UInt64 pages_migrated_to_dram;       // Pages successfully migrated NVM -> DRAM
+        UInt64 pages_migrated_to_nvm;        // Pages successfully migrated DRAM -> NVM
+        UInt64 migration_skipped_same_tier;  // Skipped: page already in target tier
+        UInt64 migration_skipped_invalid;    // Skipped: null or invalid source page
+        UInt64 migration_failed_no_free;     // Failed: no free page in destination tier
+        UInt64 tlb_shootdown_batches;        // Number of TLB shootdown batches issued
+        UInt64 dma_migrations_completed;     // DMA migration completions (PTE re-validated)
+        UInt64 syscall_lookup_failed;        // Pages not found during syscall vaddr translation
+    } migration_stats;
 
 public:
     MimicOS(bool _is_guest);
@@ -97,4 +118,5 @@ public:
     bool move_pages(std::queue<Hemem::hemem_page*> pages, std::queue<bool> migrate_up, int app_id);
     void DMA_migrate(IntPtr move_id, subsecond_time_t finish_time, int app_id = 0);
     bool move_pages_syscall(std::queue<IntPtr> src_pages_address_queue, std::queue<bool> migrate_up_queue, int app_id);
+    bool is_multi_threaded(){return one_app;}
 };

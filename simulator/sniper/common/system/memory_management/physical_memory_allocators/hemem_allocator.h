@@ -13,6 +13,7 @@
 #include <unordered_map>
 #include "buddy_allocator.h"
 #include "physical_memory_allocator.h"
+#include "stats.h"
 
 #include "../page_migration/hemem.h"
 
@@ -47,6 +48,18 @@ private:
 
     Hemem::hemem_page* create_active_page(UInt64 phy_addr, bool is_dram);
     void destroy_active_page(UInt64 phy_addr);
+
+    // Memory allocation statistics
+    struct AllocatorStats
+    {
+        UInt64 alloc_dram_pages;          // Pages allocated on DRAM (via allocate/page fault)
+        UInt64 alloc_nvm_pages;           // Pages allocated on NVM (via allocate/page fault)
+        UInt64 migration_alloc_dram;      // Pages allocated on DRAM for migration (getAFreePage/getFreePages)
+        UInt64 migration_alloc_nvm;       // Pages allocated on NVM for migration (getAFreePage/getFreePages)
+        UInt64 dealloc_dram_pages;        // Pages deallocated from DRAM
+        UInt64 dealloc_nvm_pages;         // Pages deallocated from NVM
+        UInt64 alloc_failed_oom;          // Allocation failures (out of memory)
+    } alloc_stats;
 };
 
 #endif //HEMEM_ALLOCATOR_H

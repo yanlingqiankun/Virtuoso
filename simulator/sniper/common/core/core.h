@@ -205,6 +205,8 @@ class Core
       void enqueueTLBShootdownRequest(std::array<IntPtr, TLB_SHOOT_DOWN_MAX_SIZE> &pages_queue, core_id_t init_id, int app_id, int page_num); //向 buffer 中添加 TLB shootdown 请求
       void processTLBShootdownBuffer(bool processing_remote_only); // 处理 buffer 中的 TLB shootdown 请求
       void handleRemoteTLBShootdownRequest(TLBShootdownRequest &request);
+      void handleIPIInterrupt();           // Process TLB shootdown in "kernel mode" (called from Thread::wait)
+      bool hasPendingTLBShootdown();        // Check if buffer has pending remote TLB shootdown requests
       void handleMsgFromOtherCore(core_id_t sender, PrL1PrL2DramDirectoryMSI::ShmemMsg *shmem_msg);
       void networkHandleTLBShootdownRequest(PrL1PrL2DramDirectoryMSI::ShmemMsg *shmem_msg);
       void networkHandleTLBShootdownAck(PrL1PrL2DramDirectoryMSI::ShmemMsg *shmem_msg);

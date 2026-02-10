@@ -37,14 +37,22 @@ HooksManager::HooksManager()
 
 void HooksManager::registerHook(HookType::hook_type_t type, HookCallbackFunc func, UInt64 argument, HookCallbackOrder order)
 {
+   ScopedLock sl(m_lock);
    m_registry[type].push_back(HookCallback(func, argument, order));
 }
 
 SInt64 HooksManager::callHooks(HookType::hook_type_t type, UInt64 arg, bool expect_return)
 {
+   std::vector<HookCallback> callbacks;
+   {
+      ScopedReadLock sl(m_lock);
+      if (m_registry.count(type))
+         callbacks = m_registry[type];
+   }
+
    for(unsigned int order = 0; order < NUM_HOOK_ORDER; ++order)
    {
-      for(std::vector<HookCallback>::iterator it = m_registry[type].begin(); it != m_registry[type].end(); ++it)
+      for(std::vector<HookCallback>::iterator it = callbacks.begin(); it != callbacks.end(); ++it)
       {
          if (it->order == (HookCallbackOrder)order)
          {

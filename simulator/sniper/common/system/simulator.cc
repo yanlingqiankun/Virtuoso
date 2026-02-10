@@ -201,7 +201,7 @@ void Simulator::start()
 Simulator::~Simulator()
 {
 
-
+	getMimicOS()->getPageMigrationHandler()->stop();
 
 	// Done with all the Pin stuff, allow using Config::Config again
 	m_config_file_allowed = true;

@@ -22,6 +22,8 @@
 #include "fastforward_performance_model.h"
 #include "mimicos.h"
 #include "pthread_emu.h"
+#include "thread.h"
+#include "thread_manager.h"
 // #define TLB_SHOOTDOWN_DEBUG
 
 #if 0
@@ -721,17 +723,29 @@ void Core::networkHandleTLBShootdownAck(PrL1PrL2DramDirectoryMSI::ShmemMsg *shme
  */
 void Core::enqueueTLBShootdownRequest(std::array<IntPtr, TLB_SHOOT_DOWN_MAX_SIZE> &pages_array, core_id_t init_id, int app_id, int page_num)
 {
-    ScopedLock sl(m_tlb_shootdown_buffer_lock);
+    {
+       ScopedLock sl(m_tlb_shootdown_buffer_lock);
 
-    TLBShootdownRequest request; // Created on the stack, fixes memory leak
-    request.addrs = pages_array;
-    request.app_id = app_id;
-    request.initiator_core_id = init_id;
-    request.timestamp = getPerformanceModel()->getElapsedTime();
-    request.id = pages_array.front(); // Use the first page address as a unique ID
-    request.pages_num = page_num;
+       TLBShootdownRequest request;
+       request.addrs = pages_array;
+       request.app_id = app_id;
+       request.initiator_core_id = init_id;
+       request.timestamp = getPerformanceModel()->getElapsedTime();
+       request.id = pages_array.front();
+       request.pages_num = page_num;
 
-    m_tlb_shootdown_buffer.push(request);
+       m_tlb_shootdown_buffer.push(request);
+    }
+
+    // If the target core's thread is stalled, send an IPI to wake it up 
+    // to process this TLB shootdown (either as a receiver or an initiator)
+    Thread* thread = getThread();
+    if (thread) {
+       thread_id_t tid = thread->getId();
+       if (Sim()->getThreadManager()->getThreadState(tid) == Core::STALLED) {
+          thread->signalIPI();
+       }
+    }
 }
 
 /**
@@ -823,15 +837,39 @@ void Core::handleRemoteTLBShootdownRequest(TLBShootdownRequest &request)
 }
 
 /**
+ * @brief Check if the TLB shootdown buffer has any pending remote requests.
+ */
+bool Core::hasPendingTLBShootdown()
+{
+   ScopedLock sl(m_tlb_shootdown_buffer_lock);
+   return !m_tlb_shootdown_buffer.empty();
+}
+
+/**
+ * @brief IPI interrupt handler — "kernel mode" TLB shootdown processing.
+ *
+ * Called by Thread::wait() when a stalled thread is woken up via signalIPI().
+ * Processes all pending remote TLB shootdown requests and sends ACKs via network.
+ * Own-initiated requests are left in the buffer for the normal path.
+ */
+void Core::handleIPIInterrupt()
+{
+   // In "interrupt mode", process ALL pending TLB shootdown requests.
+   // This includes remote requests (where we send an ACK) 
+   // and self-requests (where we start a broadcast and wait for ACKs).
+   processTLBShootdownBuffer(false);
+}
+
+/**
  * @brief ( process - part 3 ) Logic for the initiator to broadcast and wait.
  */
 void Core::initiateTLBShootdownBroadcast(TLBShootdownRequest &request)
 {
       // 1.Flush local cache
-       // for (int i = 0; i < TLB_SHOOT_DOWN_SIZE; i++) {
-       //    getMemoryManager()->flushCachePage(request.addrs.at(i), MemComponent::L1_DCACHE);
-       // }
-      getMemoryManager()->flushEntireL1DCache();
+       for (int i = 0; i < TLB_SHOOT_DOWN_SIZE; i++) {
+          getMemoryManager()->flushCachePage(request.addrs.at(i), MemComponent::L1_DCACHE);
+       }
+      // getMemoryManager()->flushEntireL1DCache();
        int num_to_wait_for = 0;
 
        // 2. Create pending shootdown record
@@ -889,6 +927,11 @@ void Core::initiateTLBShootdownBroadcast(TLBShootdownRequest &request)
       // todo: update time from other core
       if (num_to_wait_for) {
          while (true) {
+            // Safety check: specific for shutdown sequence
+            if (!Sim()->isRunning()) {
+               break;
+            }
+
             // _USER_THREAD sleep here
             // wait_sem->wait();
             processTLBShootdownBuffer(true);

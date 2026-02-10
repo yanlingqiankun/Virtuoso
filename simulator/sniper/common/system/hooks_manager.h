@@ -4,6 +4,7 @@
 #include "fixed_types.h"
 #include "subsecond_time.h"
 #include "thread_manager.h"
+#include "lock.h"
 
 #include <vector>
 #include <unordered_map>
@@ -102,6 +103,7 @@ public:
 
 private:
    std::unordered_map<HookType::hook_type_t, std::vector<HookCallback> > m_registry;
+   RwLock m_lock;
 };
 
 #endif /* __HOOKS_MANAGER_H */

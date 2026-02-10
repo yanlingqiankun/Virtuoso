@@ -16,6 +16,7 @@ Thread::Thread(thread_id_t thread_id, app_id_t app_id)
    , m_rtn_tracer(NULL)
    , m_va2pa_func(NULL)
    , m_va2pa_arg(0)
+   , m_ipi_pending(false)
 {
    m_syscall_model = new SyscallMdl(this);
    m_sync_client = new SyncClient(this);
@@ -58,6 +59,57 @@ void Thread::setVa2paFunc(va2pa_func_t va2pa_func, UInt64 va2pa_arg)
 {
    m_va2pa_func = va2pa_func;
    m_va2pa_arg = va2pa_arg;
+}
+
+/**
+ * @brief IPI-aware wait.
+ *
+ * When a thread is stalled (e.g., futex wait), it blocks here.
+ * If woken by signalIPI(), the thread temporarily "context-switches"
+ * to kernel mode to handle TLB shootdown requests, then goes back to sleep.
+ * If woken by signal() (normal resume), it returns as usual.
+ */
+SubsecondTime Thread::wait(Lock &lock)
+{
+   m_wakeup_msg = NULL;
+
+   // Flush before Sleep:
+   // If this thread is an initiator for a TLB shootdown but is about to stall,
+   // process the request now before sleeping to prevent deadlock.
+   Core* core = getCore();
+   if (core && core->hasPendingTLBShootdown()) {
+       lock.release();
+       core->handleIPIInterrupt();
+       lock.acquire();
+   }
+
+   while (true) {
+      m_cond.wait(lock);
+
+      // Check if this was an IPI wakeup (TLB shootdown interrupt)
+      if (m_ipi_pending) {
+         m_ipi_pending = false;
+
+         Core* core = getCore();
+         if (core && core->hasPendingTLBShootdown()) {
+            // Release ThreadManager lock before processing (kernel mode)
+            lock.release();
+            core->handleIPIInterrupt();
+            lock.acquire();
+         }
+
+         // Check if thread was also normally resumed while handling IPI
+         if (Sim()->getThreadManager()->getThreadState(m_thread_id) == Core::RUNNING) {
+            return m_wakeup_time;
+         }
+
+         // Still stalled — go back to sleep
+         continue;
+      }
+
+      // Normal wakeup (futex_wake, resume, etc.)
+      return m_wakeup_time;
+   }
 }
 
 bool Thread::reschedule(SubsecondTime &time, Core *current_core)

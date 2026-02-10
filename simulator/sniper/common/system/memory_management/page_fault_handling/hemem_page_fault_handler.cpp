@@ -55,11 +55,6 @@ void HememPagingFultHandler::allocatePagetableFrames(UInt64 address, UInt64 core
         frames.push_back(frame);
     }
 
-    Core* core_faulter = Sim()->getCoreManager()->getCoreFromID(core_id);
-    Thread* thread_faulter = core_faulter->getThread();
-
-    int app_id_faulter = thread_faulter->getAppId();
-
     MimicOS* os;
     if (is_guest) {
         os = Sim()->getMimicOS_VM();
@@ -67,6 +62,16 @@ void HememPagingFultHandler::allocatePagetableFrames(UInt64 address, UInt64 core
     else {
         os = Sim()->getMimicOS();
     }
+
+    int app_id_faulter = 0;
+
+    if (!(os->is_multi_threaded())) {
+        Core* core_faulter = Sim()->getCoreManager()->getCoreFromID(core_id);
+        Thread* thread_faulter = core_faulter->getThread();
+
+        app_id_faulter = thread_faulter->getAppId();
+    }
+
     // MimicOS* os = Sim()->getMimicOS();
     // std::cout << "-----------before------------" << std::endl;
     // std::cout << os->getPageTableName() << "------------------------" << std::endl;

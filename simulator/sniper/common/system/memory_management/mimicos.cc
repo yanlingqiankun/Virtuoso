@@ -52,7 +52,11 @@ MimicOS::MimicOS(bool _is_guest) : m_page_fault_latency(NULL, 0), tlb_flush_late
 
     std::cout << "[MimicOS] Page fault latency is " << m_page_fault_latency.getLatency().getNS() << " ns" << std::endl;
 
+    // --- Initialize page migration statistics ---
+    bzero(&migration_stats, sizeof(migration_stats));
+
     if (Sim()->getCfg()->hasKey("migration/migration_enable")) {
+        one_app = true;
         page_migration_handler = MigrationFactory::createMigration(mimicos_name);
         if (page_migration_handler) {
             TLB_SHOOT_DOWN_SIZE = Sim()->getCfg()->getInt("migration/tlb_shootdown_size");
@@ -75,6 +79,19 @@ MimicOS::MimicOS(bool _is_guest) : m_page_fault_latency(NULL, 0), tlb_flush_late
         page_migration_handler = nullptr;
         std::cout << "[MimicOS] Page migration disabled" << std::endl;
     }
+
+    // --- Register page migration stats metrics ---
+    registerStatsMetric(mimicos_name, 0, "migration_move_pages_calls", &migration_stats.move_pages_calls);
+    registerStatsMetric(mimicos_name, 0, "migration_move_pages_syscall_calls", &migration_stats.move_pages_syscall_calls);
+    registerStatsMetric(mimicos_name, 0, "migration_total_requested", &migration_stats.total_migrations_requested);
+    registerStatsMetric(mimicos_name, 0, "migration_pages_to_dram", &migration_stats.pages_migrated_to_dram);
+    registerStatsMetric(mimicos_name, 0, "migration_pages_to_nvm", &migration_stats.pages_migrated_to_nvm);
+    registerStatsMetric(mimicos_name, 0, "migration_skipped_same_tier", &migration_stats.migration_skipped_same_tier);
+    registerStatsMetric(mimicos_name, 0, "migration_skipped_invalid", &migration_stats.migration_skipped_invalid);
+    registerStatsMetric(mimicos_name, 0, "migration_failed_no_free", &migration_stats.migration_failed_no_free);
+    registerStatsMetric(mimicos_name, 0, "migration_tlb_shootdown_batches", &migration_stats.tlb_shootdown_batches);
+    registerStatsMetric(mimicos_name, 0, "migration_dma_completed", &migration_stats.dma_migrations_completed);
+    registerStatsMetric(mimicos_name, 0, "migration_syscall_lookup_failed", &migration_stats.syscall_lookup_failed);
 }
 
 MimicOS::~MimicOS()
@@ -121,6 +138,8 @@ bool MimicOS::move_pages(std::queue<Hemem::hemem_page*> src_pages_queue,
                          std::queue<bool> migrate_up_queue,
                          int app_id)
 {
+    migration_stats.move_pages_calls++;
+    migration_stats.total_migrations_requested += src_pages_queue.size();
     // cout << __func__ << " start : 0x" << src_pages_queue.front()->vaddr << endl;
     HememAllocator* allocator = dynamic_cast<HememAllocator*>(getMemoryAllocator());
     if (!allocator) {
@@ -159,10 +178,12 @@ bool MimicOS::move_pages(std::queue<Hemem::hemem_page*> src_pages_queue,
         migrate_up_queue.pop();
 
         if (src_page->in_dram == current_migrate_up) {
+            migration_stats.migration_skipped_same_tier++;
             continue;
         }
 
         if (!src_page || src_page->vaddr == 0) {
+             migration_stats.migration_skipped_invalid++;
              all_succeeded = false;
              continue; // Skip invalid source pages
         }
@@ -173,6 +194,7 @@ bool MimicOS::move_pages(std::queue<Hemem::hemem_page*> src_pages_queue,
         if (dst_page == nullptr) {
             std::cout << "[MimicOS] No free page in " << (current_migrate_up ? "DRAM" : "NVM")
                       << " for migration. Page 0x" << std::hex << src_page->vaddr << " failed." << std::endl;
+            migration_stats.migration_failed_no_free++;
             all_succeeded = false;
         } else {
             // Add to batch queues (for steps 4/5/6)
@@ -207,9 +229,16 @@ bool MimicOS::move_pages(std::queue<Hemem::hemem_page*> src_pages_queue,
                 pt->page_moving(batch_vaddrs_array[i]);
             }
 
+            // --- Step 7: Record in DMA_map (Moved before flushTLB to prevent race) ---
+            {
+                std::lock_guard<std::mutex> lock(m_dma_map_lock);
+                DMA_map[batch_key] = std::make_pair(batch_vaddrs_array, batch_new_phy_addrs_array);
+            }
+
             // --- Step 3: Flush Cache & TLB (Flush Cache & TLB Shootdown) [Blocking] ---
             // Pass the pre-filled array directly
             // cout << "flush tlb : 0x" << batch_vaddrs_array[0] << endl;
+            migration_stats.tlb_shootdown_batches++;
             issuer_core_id = flushTLB(app_id, batch_vaddrs_array, batch_count);
 
             // --- At this point, TLBs for this batch are clean ---
@@ -231,6 +260,12 @@ bool MimicOS::move_pages(std::queue<Hemem::hemem_page*> src_pages_queue,
 
                 src_page_batch->in_dram = current_migrate_up_batch;
 
+                // --- Migration direction stats ---
+                if (current_migrate_up_batch)
+                    migration_stats.pages_migrated_to_dram++;
+                else
+                    migration_stats.pages_migrated_to_nvm++;
+
                 // --- Step 5: Free the old physical page frame (now tied to dst_page struct) ---
                 dst_page_batch->vaddr = 0;
                 dst_page_batch->present = false;
@@ -238,8 +273,6 @@ bool MimicOS::move_pages(std::queue<Hemem::hemem_page*> src_pages_queue,
                 allocator->deallocate(dst_page_batch, !current_migrate_up_batch, 0); // Return to the *source* tier's free list
             }
 
-            // --- Step 7: Record in DMA_map ---
-            DMA_map[batch_key] = std::make_pair(batch_vaddrs_array, batch_new_phy_addrs_array);
 
             // --- Reset counter for the next batch ---
             batch_count = 0;
@@ -263,6 +296,7 @@ bool MimicOS::move_pages_syscall(std::queue<IntPtr> src_pages_address_queue,
                                  std::queue<bool> migrate_up_queue,
                                  int app_id)
 {
+    migration_stats.move_pages_syscall_calls++;
     // 1. Basic Validation
     if (src_pages_address_queue.size() != migrate_up_queue.size()) {
         std::cerr << "[MimicOS] Error: move_pages_syscall address queue and direction queue size mismatch." << std::endl;
@@ -302,6 +336,7 @@ bool MimicOS::move_pages_syscall(std::queue<IntPtr> src_pages_address_queue,
             valid_directions_queue.push(direction);
             valid_pages++;
         } else {
+            migration_stats.syscall_lookup_failed++;
             // Option: Log warning for pages not found (e.g., not faulted in yet)
             // std::cout << "[MimicOS] Warning: move_pages_syscall could not find metadata for vaddr 0x"
             //           << std::hex << vaddr << std::dec << ". Skipping." << std::endl;
@@ -322,6 +357,8 @@ bool MimicOS::move_pages_syscall(std::queue<IntPtr> src_pages_address_queue,
 }
 
 void MimicOS::DMA_migrate(IntPtr move_id, subsecond_time_t finish_time, int app_id) {
+
+    std::lock_guard<std::mutex> lock(m_dma_map_lock);
 
     // 1. Find the batch in the map
     auto it = DMA_map.find(move_id);
@@ -353,6 +390,7 @@ void MimicOS::DMA_migrate(IntPtr move_id, subsecond_time_t finish_time, int app_
         IntPtr new_paddr = new_phy_addrs_array[i];
 
         // 6. Update the Page Table (PTE), pointing the vaddr to the new_paddr
+        migration_stats.dma_migrations_completed++;
         pt->DMA_move_page(vaddr, finish_time);
     }
 

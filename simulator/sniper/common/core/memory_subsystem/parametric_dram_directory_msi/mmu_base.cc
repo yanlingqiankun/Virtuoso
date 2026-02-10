@@ -382,9 +382,12 @@ namespace ParametricDramDirectoryMSI
 				pf_cause_by_moving = true;
 				while (pfReason == PF_MOVING) {
 					// spin here
-					// todo: reduce page fault number
+					if (!Sim()->isRunning()) {
+						break;
+					}
 					getCore()->processTLBShootdownBuffer(false);
-					retry_result = page_table->initializeWalk(address, count, is_prefetch, restart_walk);
+					sched_yield(); 
+					retry_result = page_table->initializeWalk(address, false, is_prefetch, restart_walk);
 					pfReason = get<5>(retry_result);
 				}
 				is_pagefault = false;

@@ -335,6 +335,9 @@ void TraceManager::stop()
    // Signal threads to stop.
    for (std::vector<TraceThread *>::iterator it = m_threads.begin(); it != m_threads.end(); ++it)
      (*it)->stop();
+   // Signal the front-end (SIFT recorder) to shut down, which will close the SIFT pipes.
+   // This unblocks any trace threads that are stuck in m_trace.Read() waiting for pipe data.
+   endFrontEnd();
    // Give threads some time to end.
    sleep(1);
    // Some threads may be blocked (SIFT reader, syscall, etc.). Don't wait for them or we'll deadlock.

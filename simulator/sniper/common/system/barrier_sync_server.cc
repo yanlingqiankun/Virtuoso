@@ -112,16 +112,19 @@ void BarrierSyncServer::threadExit(HooksManager::ThreadTime *argument)
 {
    // Release thread from the barrier
    releaseThread(argument->thread_id);
-   // Check to see if we were waiting for this thread
-   signal();
+   // NOTE: Don't call signal() here - it can trigger barrierRelease() which calls HOOK_PERIODIC,
+   // and we're currently inside a HOOK_THREAD_EXIT callback while ThreadManager::m_thread_lock
+   // is held. The barrier will advance through normal synchronization or when another thread
+   // reaches the barrier. This avoids nested hook callback chains that cause lock contention.
 }
 
 void BarrierSyncServer::threadStall(HooksManager::ThreadStall *argument)
 {
    // Release thread from the barrier
    releaseThread(argument->thread_id);
-   // Check to see if we were waiting for this thread
-   signal();
+   // NOTE: Don't call signal() here - same reason as threadExit. Calling signal() would trigger
+   // barrierRelease() -> HOOK_PERIODIC callbacks while we hold ThreadManager::m_thread_lock,
+   // blocking other threads trying to synchronize. The barrier will advance naturally.
 }
 
 void BarrierSyncServer::threadMigrate(HooksManager::ThreadMigrate *argument)

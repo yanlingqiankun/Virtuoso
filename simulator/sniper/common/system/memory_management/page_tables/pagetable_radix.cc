@@ -46,6 +46,7 @@ namespace ParametricDramDirectoryMSI
 		registerStatsMetric(name, core_id, "ptw_num_cache_accesses", &stats.ptw_num_cache_accesses);
 		registerStatsMetric(name, core_id, "pf_num_cache_accesses", &stats.pf_num_cache_accesses);
 		registerStatsMetric(name, core_id, "allocated_frames", &stats.allocated_frames);
+		registerStatsMetric(name, core_id, "page_faults_of_migration", &stats.page_faults_of_migration);
 
 		stats.page_size_discovery = new UInt64[m_page_sizes];
 
@@ -163,10 +164,15 @@ namespace ParametricDramDirectoryMSI
 				if (current_frame->entries[offset].data.translation.valid == false)
 				{
 					is_pagefault = true;
-					stats.page_faults++;
+					if (count) {
+						stats.page_faults++;
+					}
+
 					if (current_frame->entries[offset].permission == MOVING) {
 						// This is a special page fault of moving page
-						stats.page_faults_of_migration++;
+						if (count) {
+							stats.page_faults_of_migration++;
+						}
 						return PTWResult(page_size_result, visited_pts, ppn_result, pwc_latency, is_pagefault, PF_MOVING, current_frame->entries[offset].DMA_finish);
 					}
 					// read_lock.unlock();
