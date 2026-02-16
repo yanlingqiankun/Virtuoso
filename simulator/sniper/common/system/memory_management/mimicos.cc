@@ -11,6 +11,8 @@
 #include "page_migration/hemem.h"
 #include "core_manager.h"
 #include "hemem_allocator.h"
+#include "site_clock.h"
+#include "pagetable_radix.h"
 
 using namespace std;
 
@@ -92,6 +94,13 @@ MimicOS::MimicOS(bool _is_guest) : m_page_fault_latency(NULL, 0), tlb_flush_late
     registerStatsMetric(mimicos_name, 0, "migration_tlb_shootdown_batches", &migration_stats.tlb_shootdown_batches);
     registerStatsMetric(mimicos_name, 0, "migration_dma_completed", &migration_stats.dma_migrations_completed);
     registerStatsMetric(mimicos_name, 0, "migration_syscall_lookup_failed", &migration_stats.syscall_lookup_failed);
+    registerStatsMetric(mimicos_name, 0, "site_shootdowns_avoided", &migration_stats.site_shootdowns_avoided);
+    registerStatsMetric(mimicos_name, 0, "site_shootdowns_performed", &migration_stats.site_shootdowns_performed);
+
+    if (Sim()->getCfg()->hasKey("site/enabled"))
+        m_site_enabled = Sim()->getCfg()->getBool("site/enabled");
+    else
+        m_site_enabled = false;
 }
 
 MimicOS::~MimicOS()
@@ -112,6 +121,51 @@ core_id_t MimicOS::flushTLB(int app_id, array<IntPtr, TLB_SHOOT_DOWN_MAX_SIZE> p
 {
     CoreManager *core_manager = Sim()->getCoreManager();
     UInt32 total_cores = Sim()->getConfig()->getTotalCores();
+
+    // ===== SITE Algorithm B: Check if shootdown can be avoided =====
+    if (m_site_enabled)
+    {
+        ParametricDramDirectoryMSI::PageTable* pt = getPageTable(app_id);
+        ParametricDramDirectoryMSI::PageTableRadix* radix_pt = 
+            dynamic_cast<ParametricDramDirectoryMSI::PageTableRadix*>(pt);
+
+        if (radix_pt)
+        {
+            UInt32 current_time = SiteLogicalClock::getInstance()->getGlobalTime();
+            bool all_expired = true;
+
+            for (int i = 0; i < page_num; i++)
+            {
+                if (page_batch[i] == 0) continue; // Skip padding
+
+                // Get the VPN (assuming 4KB base page size = 12 bits)
+                IntPtr vpn = page_batch[i] >> 12;
+                ParametricDramDirectoryMSI::PageTableRadix::SiteETTEntry& ett = radix_pt->getSiteETTEntry(vpn);
+
+                if (ett.max_expiration_time > 0 && current_time >= ett.max_expiration_time)
+                {
+                    // Entry already expired — no need to shootdown for this page
+                    migration_stats.site_shootdowns_avoided++;
+                }
+                else
+                {
+                    // Entry NOT expired — must still do shootdown
+                    all_expired = false;
+                    migration_stats.site_shootdowns_performed++;
+
+                    // Shrink the lease for this page (penalty for requiring shootdown)
+                    const UInt32 MIN_LEASE = 50;
+                    ett.current_lease = std::max(ett.current_lease / 2, MIN_LEASE);
+                }
+            }
+
+            if (all_expired)
+            {
+                // All entries expired — skip the entire shootdown!
+                return 0; // Return 0 as no core issued shootdown
+            }
+        }
+    }
 
     // Randomly select one core to issue the TLB shootdown
     core_id_t issuer_core_id = (rand() % total_cores);

@@ -57,13 +57,14 @@ namespace ParametricDramDirectoryMSI
 		{
 			
 			UInt64 m_access, m_hit, m_miss, m_eviction;
+			UInt64 m_site_expired_miss; // SITE: TLB misses due to expired entries
 
 		} tlb_stats;
 
 	public:
 		TLB(String name, String cfgname, core_id_t core_id, ComponentLatency access_latency, UInt32 num_entries, UInt32 associativity, int *page_size_list, int page_sizes, String tlb_type, bool allocate_on_miss, bool prefetch = false, TLBPrefetcherBase **tpb = NULL, int number_of_prefetchers = 0, int max_prefetch_count = 1000);
-		CacheBlockInfo *lookup(IntPtr address, SubsecondTime now, bool model_count, Core::lock_signal_t lock, IntPtr eip, bool modeled, bool count, PageTable *pt);
-		std::tuple<bool, IntPtr, IntPtr, int> allocate(IntPtr address, SubsecondTime now, bool count, Core::lock_signal_t lock, int page_size, IntPtr ppn, bool self_alloc = false);
+		CacheBlockInfo *lookup(IntPtr address, SubsecondTime now, bool model_count, Core::lock_signal_t lock, IntPtr eip, bool modeled, bool count, PageTable *pt, bool *out_site_expired = NULL);
+		std::tuple<bool, IntPtr, IntPtr, int> allocate(IntPtr address, SubsecondTime now, bool count, Core::lock_signal_t lock, int page_size, IntPtr ppn, bool self_alloc = false, UInt32 expiration_time = 0);
 		TLBtype getType() { return (m_type == "Instruction") ? Instruction : (m_type == "Data") ? Data
 																								: Unified; };
 		String getName() { return m_name; };
@@ -82,6 +83,7 @@ namespace ParametricDramDirectoryMSI
 			}
 			return false;
 		}
+		bool m_site_enabled; // SITE: Whether self-invalidating TLB entries are active
 	};
 
 }

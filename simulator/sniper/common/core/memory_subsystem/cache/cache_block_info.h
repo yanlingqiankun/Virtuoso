@@ -48,6 +48,7 @@ private:
 	block_type_t m_block_type;
 	int m_reuse; //@kanellok tracking reuse
 	int utilization;
+	UInt32 m_expiration_time; // SITE: expiration time for TLB entries (in logical clock units)
 
 	static const char *option_names[];
 
@@ -93,6 +94,10 @@ public:
 
 
 	int getPageSize() { return m_page_size; }
+
+	// SITE: expiration time accessors
+	void setExpirationTime(UInt32 t) { m_expiration_time = t; }
+	UInt32 getExpirationTime() { return m_expiration_time; }
 
 	BitsUsedType getUsage() const { return m_used; };
 	bool updateUsage(UInt32 offset, UInt32 size);

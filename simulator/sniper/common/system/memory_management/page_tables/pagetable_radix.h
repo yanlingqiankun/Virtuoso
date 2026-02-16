@@ -2,6 +2,7 @@
 #pragma once
 #include "pagetable.h"
 #include <shared_mutex>
+#include <unordered_map>
 
 namespace ParametricDramDirectoryMSI
 {
@@ -80,5 +81,38 @@ namespace ParametricDramDirectoryMSI
 		int getMaxLevel() { return levels; };
 		std::shared_mutex& get_lock_for_page(IntPtr address) override;
 		bool check_page_exist(IntPtr address) override;
+
+		// ===== SITE (Self-Invalidating TLB Entries) =====
+		/**
+		 * @brief ETT entry: stores per-page lease metadata for SITE.
+		 * 16 bytes per entry as specified in the SITE design doc.
+		 */
+		struct SiteETTEntry
+		{
+			UInt32 max_expiration_time;  // Latest expiration time distributed to TLBs
+			UInt32 current_lease;        // Current lease length
+			UInt32 last_ptw_ts_miss;     // Timestamp of last true miss
+			UInt32 last_ptw_ts;          // Timestamp of last page walk
+			int miss_counter;            // Consecutive expiration miss count
+
+			SiteETTEntry()
+				: max_expiration_time(0), current_lease(200),
+				  last_ptw_ts_miss(0), last_ptw_ts(0), miss_counter(0) {}
+		};
+
+		/**
+		 * @brief Get (or create with defaults) the SITE ETT entry for a given VPN.
+		 */
+		SiteETTEntry& getSiteETTEntry(IntPtr vpn)
+		{
+			auto it = site_ett.find(vpn);
+			if (it == site_ett.end()) {
+				site_ett[vpn] = SiteETTEntry();
+			}
+			return site_ett[vpn];
+		}
+
+	private:
+		std::unordered_map<IntPtr, SiteETTEntry> site_ett; // SITE ETT mapping: VPN -> ETT entry
 	};
 }

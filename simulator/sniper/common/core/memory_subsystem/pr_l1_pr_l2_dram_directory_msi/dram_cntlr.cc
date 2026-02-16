@@ -6,6 +6,7 @@
 #include "stats.h"
 #include "fault_injection.h"
 #include "shmem_perf.h"
+#include "site_clock.h"
 
 #if 0
    extern Lock iolock;
@@ -71,6 +72,8 @@ DramCntlr::getDataFromDram(IntPtr address, core_id_t requester, Byte* data_buf, 
    SubsecondTime dram_access_latency = runDramPerfModel(requester, now, address, READ, perf,is_metadata);
 
    ++m_reads;
+   // SITE: increment global logical clock on DRAM read
+   SiteLogicalClock::getInstance()->incrementAccessCounter();
    #ifdef ENABLE_DRAM_ACCESS_COUNT
    addToDramAccessCount(address, READ);
    #endif
@@ -97,6 +100,8 @@ DramCntlr::putDataToDram(IntPtr address, core_id_t requester, Byte* data_buf, Su
    SubsecondTime dram_access_latency = runDramPerfModel(requester, now, address, WRITE, &m_dummy_shmem_perf,is_metadata);
 
    ++m_writes;
+   // SITE: increment global logical clock on DRAM write
+   SiteLogicalClock::getInstance()->incrementAccessCounter();
    #ifdef ENABLE_DRAM_ACCESS_COUNT
    addToDramAccessCount(address, WRITE);
    #endif

@@ -10,6 +10,7 @@
 #include "tlb_subsystem.h"
 #include "mmu_base.h"
 #include "ptmshrs.h"
+#include "site_clock.h"
 
 namespace ParametricDramDirectoryMSI
 {
@@ -25,6 +26,7 @@ namespace ParametricDramDirectoryMSI
 		MSHR *pt_walkers; 
 		PWC *pwc; // Only used for radix page tables
 		bool m_pwc_enabled;
+		bool m_site_enabled; // SITE: Self-Invalidating TLB Entries
 
 
 
@@ -59,6 +61,9 @@ namespace ParametricDramDirectoryMSI
 			SubsecondTime *tlb_latency_per_level;
 			UInt64 *tlb_hit_page_sizes; 
 
+			// SITE stats
+			UInt64 site_expired_misses;
+			UInt64 site_lease_extensions;
 		} translation_stats;
 
 	public:

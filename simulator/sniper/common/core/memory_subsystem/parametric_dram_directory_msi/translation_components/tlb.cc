@@ -15,6 +15,7 @@
 #include "address_home_lookup.h"
 #include "fault_injection.h"
 #include "memory_manager.h"
+#include "site_clock.h"
 
 // #define DEBUG_TLB
 // #define TLB_STATS
@@ -70,11 +71,21 @@ namespace ParametricDramDirectoryMSI
         registerStatsMetric(name, core_id, "hits", &tlb_stats.m_hit);
         registerStatsMetric(name, core_id, "misses", &tlb_stats.m_miss);
         registerStatsMetric(name, core_id, "evictions", &tlb_stats.m_eviction);
+        registerStatsMetric(name, core_id, "site_expired_misses", &tlb_stats.m_site_expired_miss);
+
+        // SITE: read config
+        if (Sim()->getCfg()->hasKey("site/enabled"))
+            m_site_enabled = Sim()->getCfg()->getBool("site/enabled");
+        else
+            m_site_enabled = false;
 
     }
 
-    CacheBlockInfo *TLB::lookup(IntPtr address, SubsecondTime now, bool model_count, Core::lock_signal_t lock_signal, IntPtr eip, bool modeled, bool count, PageTable *pt)
+    CacheBlockInfo *TLB::lookup(IntPtr address, SubsecondTime now, bool model_count, Core::lock_signal_t lock_signal, IntPtr eip, bool modeled, bool count, PageTable *pt, bool *out_site_expired)
     {
+
+        if (out_site_expired)
+            *out_site_expired = false;
 
         if (model_count)
             tlb_stats.m_access++;
@@ -94,6 +105,25 @@ namespace ParametricDramDirectoryMSI
 
         if (hit)
         {
+            // SITE: Check if the entry has expired
+            if (m_site_enabled)
+            {
+                UInt32 expiration_time = hit->getExpirationTime();
+                UInt32 current_time = SiteLogicalClock::getInstance()->getCoreLocalTime(m_core_id);
+                if (expiration_time > 0 && current_time >= expiration_time)
+                {
+                    // Entry has expired — treat as a miss
+                    if (model_count)
+                    {
+                        tlb_stats.m_miss++;
+                        tlb_stats.m_site_expired_miss++;
+                    }
+                    if (out_site_expired)
+                        *out_site_expired = true;
+                    return NULL; // Expired entry → TLB miss
+                }
+            }
+
             tlb_stats.m_hit++;
             return hit;
         }
@@ -104,7 +134,7 @@ namespace ParametricDramDirectoryMSI
         return NULL;
     }
 
-    std::tuple<bool, IntPtr, IntPtr, int> TLB::allocate(IntPtr address, SubsecondTime now, bool count, Core::lock_signal_t lock_signal, int page_size, IntPtr ppn, bool self_alloc)
+    std::tuple<bool, IntPtr, IntPtr, int> TLB::allocate(IntPtr address, SubsecondTime now, bool count, Core::lock_signal_t lock_signal, int page_size, IntPtr ppn, bool self_alloc, UInt32 expiration_time)
     {
         if (getPrefetch() && !self_alloc)
         {
@@ -124,6 +154,16 @@ namespace ParametricDramDirectoryMSI
 
         bool eviction = false;
         m_cache.insertSingleLineTLB(address, NULL, &eviction, &evict_addr, &evict_block_info, NULL, now, NULL, CacheBlockInfo::block_type_t::NON_PAGE_TABLE, page_size, ppn);
+
+        // SITE: Set expiration time on the newly inserted entry
+        if (m_site_enabled && expiration_time > 0)
+        {
+            CacheBlockInfo *inserted = m_cache.accessSingleLineTLB(address, Cache::LOAD, NULL, 0, now, false);
+            if (inserted)
+            {
+                inserted->setExpirationTime(expiration_time);
+            }
+        }
         
         if (eviction && count)
             tlb_stats.m_eviction++;

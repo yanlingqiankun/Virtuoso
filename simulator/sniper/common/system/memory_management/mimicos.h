@@ -62,6 +62,8 @@ private:
     std::mutex m_dma_map_lock;
 
     bool one_app;
+    bool m_site_enabled;
+
 
     // Page migration statistics
     struct MigrationStats
@@ -77,6 +79,8 @@ private:
         UInt64 tlb_shootdown_batches;        // Number of TLB shootdown batches issued
         UInt64 dma_migrations_completed;     // DMA migration completions (PTE re-validated)
         UInt64 syscall_lookup_failed;        // Pages not found during syscall vaddr translation
+        UInt64 site_shootdowns_avoided;      // SITE: Shootdowns avoided due to expired TLB entries
+        UInt64 site_shootdowns_performed;    // SITE: Shootdowns still required (entries not yet expired)
     } migration_stats;
 
 public:
