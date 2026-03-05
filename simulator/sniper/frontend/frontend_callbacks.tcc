@@ -16,7 +16,7 @@ void FrontendCallbacks <T>::countInsns(threadid_t threadid, int32_t count)
 {
    m_thread_data[threadid].icount += count;
 
-   if (!m_control->get_any_thread_in_detail() && m_thread_data[threadid].output)
+   if (!m_control->get_any_thread_in_detail() && m_thread_data[threadid].output && m_options->get_response_files())
    {
       m_thread_data[threadid].icount_reported += count;
       if (m_thread_data[threadid].icount_reported > m_options->get_flow_control_ff())

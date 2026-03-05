@@ -96,6 +96,8 @@ MimicOS::MimicOS(bool _is_guest) : m_page_fault_latency(NULL, 0), tlb_flush_late
     registerStatsMetric(mimicos_name, 0, "migration_syscall_lookup_failed", &migration_stats.syscall_lookup_failed);
     registerStatsMetric(mimicos_name, 0, "site_shootdowns_avoided", &migration_stats.site_shootdowns_avoided);
     registerStatsMetric(mimicos_name, 0, "site_shootdowns_performed", &migration_stats.site_shootdowns_performed);
+    registerStatsMetric(mimicos_name, 0, "beneficial_dram_access_samples", &migration_stats.beneficial_dram_access_samples);
+    registerStatsMetric(mimicos_name, 0, "penalized_nvm_access_samples", &migration_stats.penalized_nvm_access_samples);
 
     if (Sim()->getCfg()->hasKey("site/enabled"))
         m_site_enabled = Sim()->getCfg()->getBool("site/enabled");
@@ -247,7 +249,7 @@ bool MimicOS::move_pages(std::queue<Hemem::hemem_page*> src_pages_queue,
 
         if (dst_page == nullptr) {
             std::cout << "[MimicOS] No free page in " << (current_migrate_up ? "DRAM" : "NVM")
-                      << " for migration. Page 0x" << std::hex << src_page->vaddr << " failed." << std::endl;
+                      << " for migration. Page 0x" << std::hex << src_page->vaddr << " failed." << std::dec <<std::endl;
             migration_stats.migration_failed_no_free++;
             all_succeeded = false;
         } else {
@@ -315,10 +317,13 @@ bool MimicOS::move_pages(std::queue<Hemem::hemem_page*> src_pages_queue,
                 src_page_batch->in_dram = current_migrate_up_batch;
 
                 // --- Migration direction stats ---
-                if (current_migrate_up_batch)
+                if (current_migrate_up_batch) {
                     migration_stats.pages_migrated_to_dram++;
-                else
+                    src_page_batch->migrations_up++;
+                } else {
                     migration_stats.pages_migrated_to_nvm++;
+                    src_page_batch->migrations_down++;
+                }
 
                 // --- Step 5: Free the old physical page frame (now tied to dst_page struct) ---
                 dst_page_batch->vaddr = 0;

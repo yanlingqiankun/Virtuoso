@@ -55,7 +55,7 @@ VOID countInsns(THREADID threadid, INT32 count)
 {
    thread_data[threadid].icount += count;
 
-   if (!any_thread_in_detail && thread_data[threadid].output)
+   if (!any_thread_in_detail && thread_data[threadid].output && KnobUseResponseFiles.Value())
    {
       thread_data[threadid].icount_reported += count;
       if (thread_data[threadid].icount_reported > KnobFlowControlFF.Value())
@@ -175,7 +175,7 @@ VOID sendCacheOnly(THREADID threadid, UINT32 icount, UINT32 type, ADDRINT eip, A
    thread_data[threadid].icount_reported += thread_data[threadid].icount_cacheonly_pending;
    thread_data[threadid].icount_cacheonly_pending = 0;
 
-   if (thread_data[threadid].icount_reported > KnobFlowControlFF.Value())
+   if (KnobUseResponseFiles.Value() && thread_data[threadid].icount_reported > KnobFlowControlFF.Value())
    {
       Sift::Mode mode = thread_data[threadid].output->Sync();
       thread_data[threadid].icount_reported = 0;

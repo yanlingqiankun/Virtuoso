@@ -15,7 +15,7 @@
 #define DEBUG
 
 TraceManager::TraceManager()
-   : m_monitor(new Monitor(this)), m_threads(0), m_num_threads_started(0), m_num_threads_running(0), m_done(0), m_stop_with_first_app(Sim()->getCfg()->getBool("traceinput/stop_with_first_app")), m_app_restart(Sim()->getCfg()->getBool("traceinput/restart_apps")), m_emulate_syscalls(Sim()->getCfg()->getBool("traceinput/emulate_syscalls")), m_num_apps(Sim()->getCfg()->getInt("traceinput/num_apps")), m_num_apps_nonfinish(m_num_apps), m_app_info(m_num_apps), m_tracefiles(m_num_apps), m_responsefiles(m_num_apps)
+   : m_monitor(new Monitor(this)), m_threads(0), m_num_threads_started(0), m_num_threads_running(0), m_fully_stopped(false), m_done(0), m_stop_with_first_app(Sim()->getCfg()->getBool("traceinput/stop_with_first_app")), m_app_restart(Sim()->getCfg()->getBool("traceinput/restart_apps")), m_emulate_syscalls(Sim()->getCfg()->getBool("traceinput/emulate_syscalls")), m_num_apps(Sim()->getCfg()->getInt("traceinput/num_apps")), m_num_apps_nonfinish(m_num_apps), m_app_info(m_num_apps), m_tracefiles(m_num_apps), m_responsefiles(m_num_apps)
 {
    setupTraceFiles(0);
 }
@@ -124,11 +124,25 @@ thread_id_t TraceManager::newThread(app_id_t app_id, bool first, bool init_fifo,
    int thread_num;
    if (first)
    {
-     m_app_info[app_id].num_threads = 1;
-     m_app_info[app_id].thread_count = 1;
-     Sim()->getHooksManager()->callHooks(HookType::HOOK_APPLICATION_START, (UInt64)app_id);
-     Sim()->getStatsManager()->logEvent(StatsManager::EVENT_APP_START, SubsecondTime::MaxTime(), INVALID_CORE_ID, INVALID_THREAD_ID, (UInt64)app_id, 0, "");
-     thread_num = 0;
+     // When migration_enable remaps all app_ids to 0, multiple "first" calls
+     // target the same app_info entry. Only the truly first call should reset
+     // the counters; subsequent calls must increment to keep num_threads accurate.
+     if (!m_app_info[app_id].initialized)
+     {
+       m_app_info[app_id].initialized = true;
+       m_app_info[app_id].num_threads = 1;
+       m_app_info[app_id].thread_count = 1;
+       Sim()->getHooksManager()->callHooks(HookType::HOOK_APPLICATION_START, (UInt64)app_id);
+       Sim()->getStatsManager()->logEvent(StatsManager::EVENT_APP_START, SubsecondTime::MaxTime(), INVALID_CORE_ID, INVALID_THREAD_ID, (UInt64)app_id, 0, "");
+       thread_num = 0;
+     }
+     else
+     {
+       // App already initialized (migration_enable remapped app_id),
+       // treat as additional thread to prevent num_threads counter underflow
+       m_app_info[app_id].num_threads++;
+       thread_num = m_app_info[app_id].thread_count++;
+     }
 
      if (!init_fifo)
      {
@@ -283,6 +297,16 @@ void TraceManager::signalDone(TraceThread *thread, SubsecondTime time, bool abor
    }
 
    m_num_threads_running--;
+
+   // Failsafe: if all trace threads have exited but stop() was never called
+   // (e.g., migration_enable caused all threads to share app_id, and multiple
+   // threads called SYS_exit_group / endApplication, mutually aborting each
+   // other so that no thread finishes with aborted==false), call stop() now
+   // to signal m_done and prevent wait() from blocking forever.
+   if (m_num_threads_running == 0)
+   {
+      stop();
+   }
 }
 
 void TraceManager::endApplication(TraceThread *thread, SubsecondTime time)
@@ -307,6 +331,7 @@ void TraceManager::cleanup()
    m_threads.clear();
 
    m_num_threads_running = 0;
+   m_fully_stopped = false;
    m_app_info.clear();
    m_app_info.resize(m_num_apps);
    m_num_apps_nonfinish = m_num_apps;
@@ -329,6 +354,14 @@ void TraceManager::start()
 
 void TraceManager::stop()
 {
+   // Guard: stop() may be called multiple times (from signalDone's normal path
+   // and from the fallback when all threads are aborted). Only execute once.
+   if (m_fully_stopped)
+   {
+      return;
+   }
+   m_fully_stopped = true;
+
    // End of region-of-interest when running Sniper inside Sniper
    SimRoiEnd();
 

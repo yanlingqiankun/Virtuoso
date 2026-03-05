@@ -89,5 +89,6 @@ namespace ParametricDramDirectoryMSI
 		Core* getCore() { return core; }
 		String getName() { return name; }
 		virtual bool MMUFlushTLB(int appid, IntPtr address, Core::lock_signal_t lock, bool modeled, bool count) {return false;}
+		virtual void addPageMigrationWaitTime(SubsecondTime time) {}
 	};
 }

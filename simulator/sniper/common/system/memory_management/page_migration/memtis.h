@@ -63,6 +63,9 @@ namespace Hemem {
         size_t sample_size;                // Number of DRAM pages to sample for victim selection
         UInt64 scan_interval_us;
         UInt64 policy_interval_us;
+        UInt64 hotness_margin;             // Minimum hotness difference required for swap (Hotness Guard)
+        UInt64 hotness_guard_skipped;      // Counter: swaps blocked by hotness guard
+        UInt64 direct_promotions;          // Counter: pages promoted directly (DRAM had free space)
         std::mt19937 rng;                  // Random number generator for sampling
 
         // --- Internal Functions ---

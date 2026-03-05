@@ -66,5 +66,6 @@ namespace ParametricDramDirectoryMSI
 		virtual int updatePageTableFrames(IntPtr address, IntPtr core_id, IntPtr ppn, int page_size, std::vector<UInt64> frames) = 0;
 		virtual std::shared_mutex& get_lock_for_page(IntPtr address) { std::shared_mutex ret; return ret; };
 		virtual bool check_page_exist(IntPtr address) {return true;}
+	    virtual void incrementPageFaultsOfMigration() {}
 	};
 }

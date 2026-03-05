@@ -31,16 +31,19 @@ class TraceManager
             : thread_count(1)
             , num_threads(1)
             , num_runs(0)
+            , initialized(false)
          {}
          UInt32 thread_count;       //< Index counter for new thread's FIFO name
          UInt32 num_threads;        //< Number of active threads for this app (when zero, app is done)
          UInt32 num_runs;           //< Number of completed runs
+         bool initialized;          //< Whether this app has been initialized (first thread created)
       };
 
       Monitor *m_monitor;
       std::vector<TraceThread *> m_threads;
       UInt32 m_num_threads_started;
       UInt32 m_num_threads_running;
+      bool m_fully_stopped;        //< Guard to make stop() idempotent
       Semaphore m_done;
       const bool m_stop_with_first_app;
       const bool m_app_restart;

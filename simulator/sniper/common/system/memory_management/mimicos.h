@@ -81,6 +81,8 @@ private:
         UInt64 syscall_lookup_failed;        // Pages not found during syscall vaddr translation
         UInt64 site_shootdowns_avoided;      // SITE: Shootdowns avoided due to expired TLB entries
         UInt64 site_shootdowns_performed;    // SITE: Shootdowns still required (entries not yet expired)
+        UInt64 beneficial_dram_access_samples;  // Access samples that hit a page migrated to DRAM (Benefit = samples * frequency * latency_diff)
+        UInt64 penalized_nvm_access_samples;    // Access samples that hit a page migrated down to NVM (Penalty = samples * frequency * latency_diff)
     } migration_stats;
 
 public:
@@ -123,4 +125,7 @@ public:
     void DMA_migrate(IntPtr move_id, subsecond_time_t finish_time, int app_id = 0);
     bool move_pages_syscall(std::queue<IntPtr> src_pages_address_queue, std::queue<bool> migrate_up_queue, int app_id);
     bool is_multi_threaded(){return one_app;}
+    
+    void incrementBeneficialDramAccessSamples() { migration_stats.beneficial_dram_access_samples++; }
+    void incrementPenalizedNvmAccessSamples() { migration_stats.penalized_nvm_access_samples++; }
 };

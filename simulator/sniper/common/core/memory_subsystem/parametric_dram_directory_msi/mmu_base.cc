@@ -11,6 +11,8 @@
 #include "cache_block_info.h"
 #include "stats.h"
 #include "mimicos.h"
+#include "performance_model.h"
+#include "instruction.h"
 
 // #define DEBUG_MMU
 
@@ -397,9 +399,23 @@ namespace ParametricDramDirectoryMSI
 
 			SubsecondTime t_last_DMA_finish = get<6>(retry_result);
 			SubsecondTime t_now = getCore()->getPerformanceModel()->getElapsedTime();
-			if (t_now < t_last_DMA_finish) {
-				// todo: stat information of wait time
-				shmem_perf_model->setElapsedTime(ShmemPerfModel::_USER_THREAD, t_last_DMA_finish);
+			if (t_last_DMA_finish > SubsecondTime::Zero()) {
+				if (t_now < t_last_DMA_finish) {
+					// DMA migration is still in progress from this thread's perspective
+					// Count as a page fault of migration and advance idle time
+					if (count) {
+						page_table->incrementPageFaultsOfMigration();
+					}
+					SubsecondTime idle_time = t_last_DMA_finish - t_now;
+					if (count) {
+						addPageMigrationWaitTime(idle_time);
+					}
+					PseudoInstruction *sync = new SyncInstruction(t_last_DMA_finish, SyncInstruction::PAUSE);
+					getCore()->getPerformanceModel()->queuePseudoInstruction(sync);
+					shmem_perf_model->setElapsedTime(ShmemPerfModel::_USER_THREAD, t_last_DMA_finish);
+				}
+				// If t_now >= t_last_DMA_finish, migration already completed,
+				// no page fault of migration counted, no time advancement needed
 			}
 			
 		#ifdef DEBUG_MMU

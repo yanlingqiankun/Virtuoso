@@ -46,6 +46,8 @@ namespace ParametricDramDirectoryMSI
 			UInt64 *tlb_hit_page_sizes;
 			UInt64 tlb_flush;
 
+			SubsecondTime page_migration_wait_time;
+
 		} translation_stats;
 		
 	public:
@@ -64,6 +66,7 @@ namespace ParametricDramDirectoryMSI
 		int getMaxPWCLevel();
 
 		bool MMUFlushTLB(int appid, IntPtr address, Core::lock_signal_t lock, bool modeled, bool count) override;
+		void addPageMigrationWaitTime(SubsecondTime time) override { translation_stats.page_migration_wait_time += time; }
 	};
 
 }

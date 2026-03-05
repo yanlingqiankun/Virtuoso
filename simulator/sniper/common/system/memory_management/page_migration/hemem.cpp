@@ -318,6 +318,14 @@ namespace Hemem{
                             continue;
                     }
 
+                    if (page->in_dram && !page->initial_in_dram) {
+                        Sim()->getMimicOS()->incrementBeneficialDramAccessSamples();
+                    }
+                    
+                    if (!page->in_dram && page->initial_in_dram) {
+                        Sim()->getMimicOS()->incrementPenalizedNvmAccessSamples();
+                    }
+
                     if (page->accesses[READ] >= HOT_READ_THRESHOLD || page->accesses[WRITE] >= HOT_READ_THRESHOLD) {
                         // Make the page hot
                         if (!page->hot || !page->ring_present) {

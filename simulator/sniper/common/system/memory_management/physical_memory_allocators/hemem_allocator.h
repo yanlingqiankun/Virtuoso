@@ -31,6 +31,7 @@ public:
     Hemem::hemem_page *getAFreePage(bool is_dram);
     std::queue<Hemem::hemem_page*> getFreePages(std::queue<bool> is_dram);
     void deallocatePages(std::queue<Hemem::hemem_page*> pages, std::queue<bool> is_dram, UInt64 app_id);
+    size_t getDramFreePages() { return dram_buddy->getFreePages(); }
 
 private:
     int m_preferred_node = 0; // 0 means dram
@@ -45,6 +46,7 @@ private:
     UInt64 m_dram_size_bytes;
     UInt64 m_nvm_size_bytes;
     UInt64 m_kernel_size_bytes;
+    UInt64 m_dram_size_pages;  // = m_dram_size_bytes / PAGE_SIZE, used to convert NVM byte addr -> NVM page number for buddy->free()
 
     Hemem::hemem_page* create_active_page(UInt64 phy_addr, bool is_dram);
     void destroy_active_page(UInt64 phy_addr);

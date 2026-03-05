@@ -31,6 +31,7 @@ namespace Hemem {
     struct hemem_page_t{
         UInt64 vaddr;
         bool in_dram;
+        bool initial_in_dram;
         pageTypes pt;
         bool migrating;
         bool present;
@@ -50,6 +51,7 @@ namespace Hemem {
         hemem_page_t() :accesses{},tot_accesses{}{
             vaddr = 0;
             in_dram = true;
+            initial_in_dram = true;
             pt = BASEP;
             migrating = false;
             present = false;

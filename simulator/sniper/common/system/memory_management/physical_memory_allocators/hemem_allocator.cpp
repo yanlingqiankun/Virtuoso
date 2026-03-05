@@ -190,8 +190,19 @@ HememAllocator::HememAllocator(String name, UInt64 dram_size, UInt64 nvm_size, i
 
     m_dram_size_bytes = dram_size * 1024 * 1024;
     m_nvm_size_bytes = nvm_size * 1024 * 1024;
+    // Buddy allocator operates in page numbers (PAGE_SIZE = 4096 bytes)
+    // m_dram_size_pages is used to offset NVM page numbers to avoid overlap
+    m_dram_size_pages = m_dram_size_bytes / PAGE_SIZE;
 
-    this->dram_reserved_threshold = (dram_buddy->getTotalPages()) / 10;
+    // Only reserve DRAM for migration if migration is enabled
+    if (Sim()->getCfg()->hasKey("migration/migration_enable") && Sim()->getCfg()->getBool("migration/migration_enable")) {
+        this->dram_reserved_threshold = (dram_buddy->getTotalPages()) / 10;
+        std::cout << "[Hemem] Migration enabled: reserving " << this->dram_reserved_threshold
+                  << " DRAM pages for migration" << std::endl;
+    } else {
+        this->dram_reserved_threshold = 0;
+        std::cout << "[Hemem] Migration disabled: no DRAM pages reserved" << std::endl;
+    }
     this->m_preferred_node = Sim()->getCfg()->getInt("perf_model/hemem_allocator/preferred_node");
 
     std::cout << "[Hemem] Allocator Initialized with preferred mem node "<< this->m_preferred_node <<". Metadata will be created on-demand." << std::endl;
@@ -221,18 +232,27 @@ Hemem::hemem_page* HememAllocator::create_active_page(UInt64 phy_addr, bool is_d
     if (it != m_active_pages.end()) {
         Hemem::hemem_page* p = it->second;
 
-        p->present = true;
-        p->in_dram = is_dram;
-        p->naccesses = 0;
-        p->migrating = false;
-
-        return p;
+        // Safety: if the page's phy_addr doesn't match the key, it means
+        // this entry is stale (migration swapped the phy_addr).
+        // Remove the stale entry and create a fresh page.
+        if (p->phy_addr != phy_addr) {
+            // Don't delete p — it may still be in use by the migration handler
+            // under its new phy_addr. Just remove the stale mapping.
+            m_active_pages.erase(it);
+        } else {
+            p->present = true;
+            p->in_dram = is_dram;
+            p->naccesses = 0;
+            p->migrating = false;
+            return p;
+        }
     }
 
     Hemem::hemem_page *p = new Hemem::hemem_page();
     p->phy_addr = phy_addr;
     p->present = true;
     p->in_dram = is_dram;
+    p->initial_in_dram = is_dram;
     p->naccesses = 0;
     p->migrating = false;
     p->pt = Hemem::pagesize_to_pt(PAGE_SIZE);
@@ -257,36 +277,42 @@ std::pair<UInt64, UInt64> HememAllocator::allocate(UInt64 bytes, UInt64 address,
     else {
         mutex_alloc.lock();
 
-        UInt64 allocated_phy_addr = -1;
+        UInt64 allocated_phy_addr = static_cast<UInt64>(-1);
         bool is_in_dram = false;
+        // NOTE: buddy->allocate() returns a PAGE NUMBER (page index), not a byte address.
+        // We must multiply by PAGE_SIZE to obtain the physical byte address.
         if (m_preferred_node == 0) {
-            // --- preferred node == 0 ---
+            // --- preferred node == 0 (DRAM first) ---
             if (dram_buddy->getFreePages() > this->dram_reserved_threshold) {
-                allocated_phy_addr = dram_buddy->allocate(bytes, 0, core_id);
-                if (allocated_phy_addr != static_cast<UInt64>(-1)) {
+                UInt64 page_num = dram_buddy->allocate(bytes, 0, core_id);
+                if (page_num != static_cast<UInt64>(-1)) {
+                    // Convert page number -> byte physical address
+                    allocated_phy_addr = page_num * PAGE_SIZE;
                     is_in_dram = true;
                 }
             }
-            // DRAM is full
+            // DRAM is full, fall back to NVM
             if (allocated_phy_addr == static_cast<UInt64>(-1)) {
-                allocated_phy_addr = nvm_buddy->allocate(bytes, 0, core_id);
-                if (allocated_phy_addr != static_cast<UInt64>(-1)) {
-                    allocated_phy_addr += m_dram_size_bytes;
+                UInt64 page_num = nvm_buddy->allocate(bytes, 0, core_id);
+                if (page_num != static_cast<UInt64>(-1)) {
+                    // NVM page number -> byte address: NVM starts after DRAM in physical space
+                    allocated_phy_addr = page_num * PAGE_SIZE + m_dram_size_bytes;
                     is_in_dram = false;
                 }
             }
         }
         else {
-            // --- preferred node == 1 ---
-            allocated_phy_addr = nvm_buddy->allocate(bytes, 0, core_id);
-            if (allocated_phy_addr != static_cast<UInt64>(-1)) {
-                allocated_phy_addr += m_dram_size_bytes;
+            // --- preferred node == 1 (NVM first) ---
+            UInt64 page_num = nvm_buddy->allocate(bytes, 0, core_id);
+            if (page_num != static_cast<UInt64>(-1)) {
+                allocated_phy_addr = page_num * PAGE_SIZE + m_dram_size_bytes;
                 is_in_dram = false;
             }
-            // NVM is full
+            // NVM is full, fall back to DRAM
             else if (dram_buddy->getFreePages() > this->dram_reserved_threshold) {
-                allocated_phy_addr = dram_buddy->allocate(bytes, 0, core_id);
-                if (allocated_phy_addr != static_cast<UInt64>(-1)) {
+                page_num = dram_buddy->allocate(bytes, 0, core_id);
+                if (page_num != static_cast<UInt64>(-1)) {
+                    allocated_phy_addr = page_num * PAGE_SIZE;
                     is_in_dram = true;
                 }
             }
@@ -314,20 +340,39 @@ std::pair<UInt64, UInt64> HememAllocator::allocate(UInt64 bytes, UInt64 address,
             alloc_stats.alloc_nvm_pages++;
         }
 
+                // --- Real-time Memory Monitoring ---
+        // Print stats every 256 allocations (every 1MB)
+        if ((alloc_stats.alloc_dram_pages + alloc_stats.alloc_nvm_pages) % 256 == 0) {
+            UInt64 total_dram_used = alloc_stats.alloc_dram_pages * 4096; // bytes
+            UInt64 total_nvm_used = alloc_stats.alloc_nvm_pages * 4096;   // bytes
+            
+            std::cout << "[Hemem Monitor] "
+                      << "DRAM Usage: " << (total_dram_used / 1024 / 1024) << " MB (" 
+                      << alloc_stats.alloc_dram_pages << " pages) | "
+                      << "NVM Usage: " << (total_nvm_used / 1024 / 1024) << " MB (" 
+                      << alloc_stats.alloc_nvm_pages << " pages) | "
+                      << "DRAM Free: " << dram_buddy->getFreePages() << " pages"
+                      << std::endl;
+        }
+
         return make_pair(allocated_phy_addr, 12);
     }
 }
 
 Hemem::hemem_page *HememAllocator::getAFreePage(bool is_dram) {
     mutex_alloc.lock();
-    UInt64 phy_addr = -1;
+    UInt64 phy_addr = static_cast<UInt64>(-1);
 
     if (is_dram) {
-        phy_addr = dram_buddy->allocate(PAGE_SIZE, 0, 0);
+        UInt64 page_num = dram_buddy->allocate(PAGE_SIZE, 0, 0);
+        if (page_num != static_cast<UInt64>(-1)) {
+            phy_addr = page_num * PAGE_SIZE;
+        }
     } else {
-        phy_addr = nvm_buddy->allocate(PAGE_SIZE, 0, 0);
-        if (phy_addr != static_cast<UInt64>(-1)) {
-            phy_addr += m_dram_size_bytes;
+        UInt64 page_num = nvm_buddy->allocate(PAGE_SIZE, 0, 0);
+        if (page_num != static_cast<UInt64>(-1)) {
+            // NVM physical address = page_num * PAGE_SIZE + DRAM region size
+            phy_addr = page_num * PAGE_SIZE + m_dram_size_bytes;
         }
     }
 
@@ -359,19 +404,22 @@ std::queue<Hemem::hemem_page*> HememAllocator::getFreePages(std::queue<bool> is_
         bool is_dram = temp_queue.front();
         temp_queue.pop();
 
-        UInt64 phy_addr = -1;
+        UInt64 phy_addr = static_cast<UInt64>(-1);
         if (is_dram) {
-            phy_addr = dram_buddy->allocate(PAGE_SIZE, 0, 0);
+            UInt64 page_num = dram_buddy->allocate(PAGE_SIZE, 0, 0);
+            if (page_num != static_cast<UInt64>(-1)) {
+                phy_addr = page_num * PAGE_SIZE;
+            }
         } else {
-            phy_addr = nvm_buddy->allocate(PAGE_SIZE, 0, 0);
-            if (phy_addr != static_cast<UInt64>(-1)) {
-                phy_addr += m_dram_size_bytes;
+            UInt64 page_num = nvm_buddy->allocate(PAGE_SIZE, 0, 0);
+            if (page_num != static_cast<UInt64>(-1)) {
+                phy_addr = page_num * PAGE_SIZE + m_dram_size_bytes;
             }
         }
 
         if (phy_addr == static_cast<UInt64>(-1)) break;
 
-        // 按需创建
+        // 按需创建页元数据
         Hemem::hemem_page* page = create_active_page(phy_addr, is_dram);
         ret.push(page);
 
@@ -389,18 +437,23 @@ std::queue<Hemem::hemem_page*> HememAllocator::getFreePages(std::queue<bool> is_
 
 void HememAllocator::deallocate(UInt64 region_begin, UInt64 core_id)
 {
-    UInt64 region_end = region_begin + PAGE_SIZE - 1;
+    // region_begin is a byte physical address.
+    // Buddy->free() expects page numbers, so we convert: page_num = byte_addr / PAGE_SIZE.
+    UInt64 page_start = region_begin / PAGE_SIZE;
+    UInt64 page_end   = page_start; // single page
 
     mutex_alloc.lock();
 
     if (region_begin < m_dram_size_bytes) {
-        dram_buddy->free(region_begin, region_end);
+        // DRAM page: pass DRAM-relative page numbers directly
+        dram_buddy->free(page_start, page_end);
         alloc_stats.dealloc_dram_pages++;
     } else {
-        if (region_begin >= m_dram_size_bytes) {
-            nvm_buddy->free(region_begin - m_dram_size_bytes, region_end - m_dram_size_bytes);
-            alloc_stats.dealloc_nvm_pages++;
-        }
+        // NVM page: subtract DRAM page count to get NVM-relative page numbers
+        UInt64 nvm_page_start = page_start - m_dram_size_pages;
+        UInt64 nvm_page_end   = nvm_page_start;
+        nvm_buddy->free(nvm_page_start, nvm_page_end);
+        alloc_stats.dealloc_nvm_pages++;
     }
 
     destroy_active_page(region_begin);
@@ -411,22 +464,30 @@ void HememAllocator::deallocate(UInt64 region_begin, UInt64 core_id)
 void HememAllocator::deallocate(Hemem::hemem_page *page, bool is_dram, UInt64 core_id) {
     if (!page) return;
 
-    UInt64 start_addr = page->phy_addr;
-    UInt64 end_addr = start_addr + PAGE_SIZE - 1;
+    UInt64 start_addr = page->phy_addr; // byte physical address
+
+    // Safety: determine actual tier from address, not the caller's is_dram flag
+    bool actual_dram = (start_addr < m_dram_size_bytes);
+
+    // Convert to page number for buddy->free()
+    UInt64 page_num = start_addr / PAGE_SIZE;
 
     mutex_alloc.lock();
 
-    if (is_dram) {
-        if (start_addr < m_dram_size_bytes) {
-            dram_buddy->free(start_addr, end_addr);
-            alloc_stats.dealloc_dram_pages++;
-        }
+    if (actual_dram) {
+        dram_buddy->free(page_num, page_num);
+        alloc_stats.dealloc_dram_pages++;
     } else {
-        if (start_addr >= m_dram_size_bytes) {
-            nvm_buddy->free(start_addr - m_dram_size_bytes, end_addr - m_dram_size_bytes);
-            alloc_stats.dealloc_nvm_pages++;
-        }
+        UInt64 nvm_page_num = page_num - m_dram_size_pages;
+        nvm_buddy->free(nvm_page_num, nvm_page_num);
+        alloc_stats.dealloc_nvm_pages++;
     }
+
+    // Remove from m_active_pages to prevent stale entry reuse after migration swap.
+    // After migration, page->phy_addr may differ from the key it was originally
+    // inserted under, so we must search by the CURRENT phy_addr (start_addr).
+    // Also try to remove by the key that might still map to this page.
+    m_active_pages.erase(start_addr);
 
     page->present = false;
     page->naccesses = 0;
@@ -440,23 +501,27 @@ void HememAllocator::deallocatePages(std::queue<Hemem::hemem_page*> pages, std::
     while (!pages.empty() && !is_dram_queue.empty()) {
         Hemem::hemem_page *page = pages.front();
         pages.pop();
-        bool is_dram = is_dram_queue.front();
-        is_dram_queue.pop();
+        is_dram_queue.pop();  // consume but not used — we determine tier from address
 
-        UInt64 start_addr = page->phy_addr;
-        UInt64 end_addr = start_addr + PAGE_SIZE - 1;
+        if (!page) continue;
 
-        if (is_dram) {
-             if (start_addr < m_dram_size_bytes) {
-                dram_buddy->free(start_addr, end_addr);
-                alloc_stats.dealloc_dram_pages++;
-             }
+        UInt64 start_addr = page->phy_addr;  // byte physical address
+        UInt64 page_num   = start_addr / PAGE_SIZE;
+
+        // Determine actual tier from address
+        bool actual_dram = (start_addr < m_dram_size_bytes);
+
+        if (actual_dram) {
+            dram_buddy->free(page_num, page_num);
+            alloc_stats.dealloc_dram_pages++;
         } else {
-             if (start_addr >= m_dram_size_bytes) {
-                nvm_buddy->free(start_addr - m_dram_size_bytes, end_addr - m_dram_size_bytes);
-                alloc_stats.dealloc_nvm_pages++;
-             }
+            UInt64 nvm_page_num = page_num - m_dram_size_pages;
+            nvm_buddy->free(nvm_page_num, nvm_page_num);
+            alloc_stats.dealloc_nvm_pages++;
         }
+
+        // Remove from active pages map to prevent stale entry reuse
+        m_active_pages.erase(start_addr);
 
         page->present = false;
         page->naccesses = 0;

@@ -81,6 +81,7 @@ namespace ParametricDramDirectoryMSI
 		int getMaxLevel() { return levels; };
 		std::shared_mutex& get_lock_for_page(IntPtr address) override;
 		bool check_page_exist(IntPtr address) override;
+		void incrementPageFaultsOfMigration() override { stats.page_faults_of_migration++; }
 
 		// ===== SITE (Self-Invalidating TLB Entries) =====
 		/**

@@ -5,6 +5,7 @@
 #include "memtis.h"
 #include "simulator.h"
 #include "mimicos.h"
+#include "hemem_allocator.h"
 #include <unistd.h>
 #include <iostream>
 #include <cmath>
@@ -27,7 +28,10 @@ namespace Hemem {
           sample_size(DEFAULT_SAMPLE_SIZE),
           scan_interval_us(DEFAULT_SCAN_INTERVAL),
           policy_interval_us(DEFAULT_POLICY_INTERVAL),
-          hot_threshold(DEFAULT_HOT_THRESHOLD)
+          hot_threshold(DEFAULT_HOT_THRESHOLD),
+          hotness_margin(0),
+          hotness_guard_skipped(0),
+          direct_promotions(0)
     {
         this->setName("Memtis");
         std::random_device rd;
@@ -35,6 +39,12 @@ namespace Hemem {
         if (Sim()->getCfg()->hasKey("migration/hot_threshold")) {
             hot_threshold = Sim()->getCfg()->getInt("migration/hot_threshold");
         }
+        if (Sim()->getCfg()->hasKey("migration/hotness_margin")) {
+            hotness_margin = Sim()->getCfg()->getInt("migration/hotness_margin");
+        }
+        std::cout << "[Memtis] Hotness Guard enabled with margin = " << hotness_margin << std::endl;
+        registerStatsMetric("memtis", 0, "hotness_guard_skipped", &hotness_guard_skipped);
+        registerStatsMetric("memtis", 0, "direct_promotions", &direct_promotions);
     }
 
     Memtis::~Memtis() { stop(); }
@@ -122,6 +132,16 @@ namespace Hemem {
                     // 2. Increment Unified Access Counter (Read & Write treated equally)
                     if (page_sample.type == LLC_Miss_RD || page_sample.type == LLC_Miss_ST) {
                         page->naccesses++;
+                        
+                        // Track accesses to pages that have been migrated from NVM to DRAM.
+                        if (page->in_dram && !page->initial_in_dram) {
+                            Sim()->getMimicOS()->incrementBeneficialDramAccessSamples();
+                        }
+                        
+                        // Track accesses to pages that were demoted down to NVM (Penalty)
+                        if (!page->in_dram && page->initial_in_dram) {
+                            Sim()->getMimicOS()->incrementPenalizedNvmAccessSamples();
+                        }
                     } else {
                         continue;
                     }
@@ -158,7 +178,6 @@ namespace Hemem {
             // cout << "current_echoch = " << current_epoch << endl;
 
             std::vector<hemem_page_t*> to_promote;
-            std::vector<hemem_page_t*> to_demote;
 
             // 2. Fetch candidates from Fast Promotion Queue
             {
@@ -174,83 +193,145 @@ namespace Hemem {
             }
             // cout << "Number of to_promote is " << to_promote.size() << endl;
 
-            // 3. Select Victims in DRAM via Random Sampling + Sorting
-            {
-                std::unique_lock<std::shared_mutex> list_lock(page_list_mutex);
+            // --- Step 3: Check DRAM free space and split into direct promotions vs swaps ---
+            HememAllocator* allocator = dynamic_cast<HememAllocator*>(
+                Sim()->getMimicOS()->getMemoryAllocator());
 
-                if (!dram_pages.empty()) {
-                    std::vector<hemem_page_t*> dram_sample;
-                    size_t actual_sample = std::min(sample_size, dram_pages.size());
-                    std::uniform_int_distribution<size_t> dist(0, dram_pages.size() - 1);
+            size_t dram_free = allocator ? allocator->getDramFreePages() : 0;
 
-                    // A. Random Sampling
-                    for(size_t i=0; i<actual_sample; ++i) {
-                        dram_sample.push_back(dram_pages[dist(rng)]);
-                    }
+            // Candidates that can be directly promoted (DRAM has free space, no swap needed)
+            std::vector<hemem_page_t*> direct_promote;
+            // Candidates that need a swap (DRAM is full for these)
+            std::vector<hemem_page_t*> swap_candidates;
 
-                    // B. Sort Samples to find the COLDEST
-                    // IMPORTANT: We use `get_current_hotness` to ensure pages are cooled
-                    // to the current epoch before comparison.
-                    std::sort(dram_sample.begin(), dram_sample.end(),
-                        [&](hemem_page_t* a, hemem_page_t* b) {
-                            return get_current_hotness(a) < get_current_hotness(b);
-                        });
-
-                    // C. Select the N coldest pages
-                    size_t demote_cnt = std::min(to_promote.size(), dram_sample.size());
-                    for(size_t i=0; i<demote_cnt; ++i) {
-                        to_demote.push_back(dram_sample[i]);
-                    }
+            // Split: first N go direct (where N = dram_free), rest need swap
+            for (size_t i = 0; i < to_promote.size(); ++i) {
+                if (i < dram_free) {
+                    direct_promote.push_back(to_promote[i]);
+                } else {
+                    swap_candidates.push_back(to_promote[i]);
                 }
             }
-            // cout << "Number of to_demote is " << to_demote.size() << endl;
 
-            // 4. Execute Batch Migration
-            // Ensure 1-to-1 swap count
-            size_t final_count = std::min(to_promote.size(), to_demote.size());
-            to_promote.resize(final_count);
-            to_demote.resize(final_count);
-            // cout << "migration count = " << final_count << endl;
-            if (final_count > 0) {
-                batch_migrate(to_promote, to_demote);
+            // === Path A: Direct Promotion (no demotion needed) ===
+            if (!direct_promote.empty()) {
+                direct_promotions += direct_promote.size();
 
-                // 5. Maintenance: Update Global Lists after Migration
-                std::unique_lock<std::shared_mutex>list_lock(page_list_mutex);
-                std::lock_guard<std::mutex> q_lock(queue_mutex); // Lock needed to clear pending_pages
+                // batch_migrate with empty demote vector = promote only
+                std::vector<hemem_page_t*> empty_demote;
+                batch_migrate(direct_promote, empty_demote);
 
-                // Helper lambdas
-                auto is_nvm = [](hemem_page_t* p) { return !p->in_dram; };
-                auto is_dram = [](hemem_page_t* p) { return p->in_dram; };
+                // Maintenance: update global lists
+                std::unique_lock<std::shared_mutex> list_lock(page_list_mutex);
+                std::lock_guard<std::mutex> q_lock(queue_mutex);
 
-                // Remove pages that have moved from their respective lists
-                auto d_it = std::remove_if(dram_pages.begin(), dram_pages.end(), is_nvm);
-                dram_pages.erase(d_it, dram_pages.end());
-
-                auto n_it = std::remove_if(nvm_pages.begin(), nvm_pages.end(), is_dram);
+                // Move promoted pages from nvm_pages to dram_pages
+                auto n_it = std::remove_if(nvm_pages.begin(), nvm_pages.end(),
+                    [](hemem_page_t* p) { return p->in_dram; });
                 nvm_pages.erase(n_it, nvm_pages.end());
 
-                // Add promoted pages to DRAM list
-                for(auto* p : to_promote) {
-                    if(p->in_dram) dram_pages.push_back(p);
+                for (auto* p : direct_promote) {
+                    if (p->in_dram) dram_pages.push_back(p);
                     else nvm_pages.push_back(p); // Migration failed? keep in NVM
 
-                    // Clear pending status to allow future promotion
                     pending_pages.erase(p);
                     p->migrating = false;
                 }
+            }
 
-                // Add demoted pages to NVM list
-                for(auto* p : to_demote) {
-                    if(!p->in_dram) nvm_pages.push_back(p);
-                    else dram_pages.push_back(p); // Migration failed? keep in DRAM
+            // === Path B: Swap Promotion (DRAM full, need to find victims) ===
+            if (!swap_candidates.empty()) {
+                std::vector<hemem_page_t*> to_demote;
+
+                // 3B. Select Victims in DRAM via Random Sampling + Sorting
+                {
+                    std::unique_lock<std::shared_mutex> list_lock(page_list_mutex);
+
+                    if (!dram_pages.empty()) {
+                        std::vector<hemem_page_t*> dram_sample;
+                        size_t actual_sample = std::min(sample_size, dram_pages.size());
+                        std::uniform_int_distribution<size_t> dist(0, dram_pages.size() - 1);
+
+                        for (size_t i = 0; i < actual_sample; ++i) {
+                            dram_sample.push_back(dram_pages[dist(rng)]);
+                        }
+
+                        std::sort(dram_sample.begin(), dram_sample.end(),
+                            [&](hemem_page_t* a, hemem_page_t* b) {
+                                return get_current_hotness(a) < get_current_hotness(b);
+                            });
+
+                        size_t demote_cnt = std::min(swap_candidates.size(), dram_sample.size());
+                        for (size_t i = 0; i < demote_cnt; ++i) {
+                            to_demote.push_back(dram_sample[i]);
+                        }
+                    }
                 }
-            } else {
-                 // If no migration occurred (e.g., DRAM empty), release locks on pending pages
-                 std::lock_guard<std::mutex> q_lock(queue_mutex);
-                 for(auto* p : to_promote) {
-                     pending_pages.erase(p);
-                     p->migrating = false;
-                 }
+
+                // 4B. Hotness Guard: Only swap if promote candidate is significantly hotter
+                std::vector<hemem_page_t*> final_promote;
+                std::vector<hemem_page_t*> final_demote;
+                std::vector<hemem_page_t*> skipped_promote;
+
+                {
+                    size_t pair_count = std::min(swap_candidates.size(), to_demote.size());
+                    for (size_t i = 0; i < pair_count; ++i) {
+                        UInt64 promote_hotness = get_current_hotness(swap_candidates[i]);
+                        UInt64 demote_hotness  = get_current_hotness(to_demote[i]);
+
+                        if (promote_hotness > demote_hotness + hotness_margin) {
+                            final_promote.push_back(swap_candidates[i]);
+                            final_demote.push_back(to_demote[i]);
+                        } else {
+                            skipped_promote.push_back(swap_candidates[i]);
+                            hotness_guard_skipped++;
+                        }
+                    }
+                    // Unmatched swap candidates (not enough victims)
+                    for (size_t i = pair_count; i < swap_candidates.size(); ++i) {
+                        skipped_promote.push_back(swap_candidates[i]);
+                    }
+                }
+
+                // 5B. Execute Batch Migration (only the filtered pairs)
+                if (!final_promote.empty()) {
+                    batch_migrate(final_promote, final_demote);
+
+                    // 6B. Maintenance: Update Global Lists after Migration
+                    std::unique_lock<std::shared_mutex> list_lock(page_list_mutex);
+                    std::lock_guard<std::mutex> q_lock(queue_mutex);
+
+                    auto is_nvm = [](hemem_page_t* p) { return !p->in_dram; };
+                    auto is_dram = [](hemem_page_t* p) { return p->in_dram; };
+
+                    auto d_it = std::remove_if(dram_pages.begin(), dram_pages.end(), is_nvm);
+                    dram_pages.erase(d_it, dram_pages.end());
+
+                    auto n_it = std::remove_if(nvm_pages.begin(), nvm_pages.end(), is_dram);
+                    nvm_pages.erase(n_it, nvm_pages.end());
+
+                    for (auto* p : final_promote) {
+                        if (p->in_dram) dram_pages.push_back(p);
+                        else nvm_pages.push_back(p);
+
+                        pending_pages.erase(p);
+                        p->migrating = false;
+                    }
+
+                    for (auto* p : final_demote) {
+                        if (!p->in_dram) nvm_pages.push_back(p);
+                        else dram_pages.push_back(p);
+                    }
+                }
+
+                // Release skipped swap candidates
+                {
+                    std::lock_guard<std::mutex> q_lock(queue_mutex);
+                    for (auto* p : skipped_promote) {
+                        pending_pages.erase(p);
+                        p->migrating = false;
+                    }
+                }
             }
         }
     }

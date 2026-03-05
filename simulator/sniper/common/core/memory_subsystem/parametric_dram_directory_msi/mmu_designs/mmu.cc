@@ -116,6 +116,7 @@ namespace ParametricDramDirectoryMSI
 		registerStatsMetric(name, core->getId(), "total_tlb_latency", &translation_stats.total_tlb_latency);
 		registerStatsMetric(name, core->getId(), "total_translation_latency", &translation_stats.total_translation_latency);
 		registerStatsMetric(name, core->getId(), "total_fault_latency", &translation_stats.total_fault_latency);
+		registerStatsMetric(name, core->getId(), "page_migration_wait_time", &translation_stats.page_migration_wait_time);
 
 
 		// This statistic can be used to compare it against the *.active counter which is exposed through performance counters in a real system

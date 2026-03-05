@@ -167,7 +167,7 @@ Sift::Writer::~Writer()
 {
    End();
 
-   delete m_response_filename;
+   free(m_response_filename);
 
    #if VERBOSE > 3
    printf("instrs %lu hsize", ninstrs);

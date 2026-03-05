@@ -170,9 +170,8 @@ namespace ParametricDramDirectoryMSI
 
 					if (current_frame->entries[offset].permission == MOVING) {
 						// This is a special page fault of moving page
-						if (count) {
-							stats.page_faults_of_migration++;
-						}
+						// Note: page_faults_of_migration is counted at the MMU layer
+						// only when DMA_finish > current simulation time
 						return PTWResult(page_size_result, visited_pts, ppn_result, pwc_latency, is_pagefault, PF_MOVING, current_frame->entries[offset].DMA_finish);
 					}
 					// read_lock.unlock();
