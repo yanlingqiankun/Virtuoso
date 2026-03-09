@@ -343,14 +343,16 @@ std::pair<UInt64, UInt64> HememAllocator::allocate(UInt64 bytes, UInt64 address,
                 // --- Real-time Memory Monitoring ---
         // Print stats every 256 allocations (every 1MB)
         if ((alloc_stats.alloc_dram_pages + alloc_stats.alloc_nvm_pages) % 256 == 0) {
-            UInt64 total_dram_used = alloc_stats.alloc_dram_pages * 4096; // bytes
-            UInt64 total_nvm_used = alloc_stats.alloc_nvm_pages * 4096;   // bytes
+            UInt64 used_dram_pages = dram_buddy->getTotalPages() - dram_buddy->getFreePages();
+            UInt64 used_nvm_pages = nvm_buddy->getTotalPages() - nvm_buddy->getFreePages();
+            UInt64 total_dram_used = used_dram_pages * 4096; // bytes
+            UInt64 total_nvm_used = used_nvm_pages * 4096;   // bytes
             
             std::cout << "[Hemem Monitor] "
                       << "DRAM Usage: " << (total_dram_used / 1024 / 1024) << " MB (" 
-                      << alloc_stats.alloc_dram_pages << " pages) | "
+                      << used_dram_pages << " pages) | "
                       << "NVM Usage: " << (total_nvm_used / 1024 / 1024) << " MB (" 
-                      << alloc_stats.alloc_nvm_pages << " pages) | "
+                      << used_nvm_pages << " pages) | "
                       << "DRAM Free: " << dram_buddy->getFreePages() << " pages"
                       << std::endl;
         }

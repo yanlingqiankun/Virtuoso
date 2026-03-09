@@ -167,6 +167,19 @@ void ThreadManager::onThreadExit(thread_id_t thread_id)
    SubsecondTime time = core->getPerformanceModel()->getElapsedTime();
 
    assert(m_thread_state[thread_id].status == Core::RUNNING);
+
+   // Drain TLB shootdown buffer BEFORE setting state to IDLE.
+   // Handles the race where a shootdown request was enqueued (because the core
+   // was RUNNING when it arrived) but the thread exits before it is processed.
+   // After this call any remaining requests in the buffer will have been ACKed,
+   // and new arrivals will be handled by the fast-path in
+   // networkHandleTLBShootdownRequest (immediate ACK from the SIM thread).
+   if (core->hasPendingTLBShootdown()) {
+      m_thread_lock.release();
+      core->handleIPIInterrupt();   // processes buffer, sends ACKs
+      m_thread_lock.acquire();
+   }
+
    m_thread_state[thread_id].status = Core::IDLE;
 
    // Implement pthread_join

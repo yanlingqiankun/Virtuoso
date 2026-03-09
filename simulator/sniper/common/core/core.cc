@@ -651,16 +651,39 @@ void Core::networkHandleTLBShootdownRequest(PrL1PrL2DramDirectoryMSI::ShmemMsg *
         return;
     }
 
-      SubsecondTime msg_time = getShmemPerfModel()->getElapsedTime(ShmemPerfModel::_SIM_THREAD);
-      getShmemPerfModel()->updateElapsedTime(msg_time, ShmemPerfModel::_USER_THREAD);
-
     auto* payload = reinterpret_cast<TLBShootdownRequestPayload *>(shmem_msg->getDataBuf());
+
+    // Push-based fast path: if this core is IDLE (thread has exited), its TLB
+    // entries are irrelevant.  Send an immediate ACK from the SIM thread instead
+    // of enqueueing — the user thread no longer exists to drain the buffer.
+    if (getState() == Core::IDLE || getThread() == nullptr) {
+        TLBShootdownAckPayload ack_payload{};
+        ack_payload.request_id = payload->request_id;
+        ack_payload.page_num   = payload->page_num;
+        // flush_result left as all-false: no active TLB entries on an IDLE core
+        getMemoryManager()->sendMsg(
+            PrL1PrL2DramDirectoryMSI::ShmemMsg::TLB_SHOOTDOWN_ACK,
+            MemComponent::CORE, MemComponent::CORE,
+            m_core_id,                   // requester (sender of ACK)
+            shmem_msg->getRequester(),   // receiver (original initiator)
+            shmem_msg->getAddress(),     // request id
+            reinterpret_cast<Byte*>(&ack_payload), sizeof(ack_payload),
+            HitWhere::UNKNOWN, m_shmem_perf,
+            ShmemPerfModel::_SIM_THREAD,
+            CacheBlockInfo::block_type_t::TLB_ENTRY
+        );
+        return;
+    }
+
+    SubsecondTime msg_time = getShmemPerfModel()->getElapsedTime(ShmemPerfModel::_SIM_THREAD);
+    getShmemPerfModel()->updateElapsedTime(msg_time, ShmemPerfModel::_USER_THREAD);
+
     enqueueTLBShootdownRequest(
        payload->addrs,
        shmem_msg->getRequester(),
        payload->app_id,
        payload->page_num
-       );
+    );
 }
 
 /**
@@ -679,13 +702,13 @@ void Core::networkHandleTLBShootdownAck(PrL1PrL2DramDirectoryMSI::ShmemMsg *shme
 #ifdef TLB_SHOOTDOWN_DEBUG
       cout << "core " << getId() << " dealing reply of 0x" << request_id << endl;
 #endif
-      cout << "core " << getId() << " receive of 0x" << request_id << " : [ ";
+      // cout << "core " << getId() << " receive of 0x" << request_id << " : [ ";
 
-      for (int i = 0; i < payload->page_num; ++i) {
-         auto res = payload->flush_result[i];
-         cout << (res ? "1" : "0");
-      }
-      cout << " ]" << endl;
+      // for (int i = 0; i < payload->page_num; ++i) {
+      //    auto res = payload->flush_result[i];
+      //    cout << (res ? "1" : "0");
+      // }
+      // cout << " ]" << endl;
 
       {
          ScopedLock sl(m_pending_shootdowns_lock);
@@ -881,12 +904,19 @@ void Core::initiateTLBShootdownBroadcast(TLBShootdownRequest &request)
            pending.max_end_time = getPerformanceModel()->getElapsedTime();
            pending.address = request.id;
 
-           // Add all other cores to the pending list
-           for (core_id_t core_id = 0; core_id < Sim()->getConfig()->getApplicationCores(); core_id++) {
-               if (core_id != m_core_id) {
-                   pending.pending_cores.insert(core_id);
-               }
-           }
+            // Add all other ACTIVE cores to the pending list.
+            // Skip cores that are IDLE (thread has exited) — they have no
+            // running thread, cannot process IPI requests, and their TLB
+            // entries are irrelevant.  Waiting for an IDLE core's ACK would
+            // cause a deadlock because nobody will ever process the request.
+            for (core_id_t core_id = 0; core_id < Sim()->getConfig()->getApplicationCores(); core_id++) {
+                if (core_id != m_core_id) {
+                    Core* target_core = Sim()->getCoreManager()->getCoreFromID(core_id);
+                    if (target_core && target_core->getState() != Core::IDLE) {
+                        pending.pending_cores.insert(core_id);
+                    }
+                }
+            }
 
           num_to_wait_for = pending.pending_cores.size(); // Record how many ACKs to wait for
 
@@ -932,26 +962,29 @@ void Core::initiateTLBShootdownBroadcast(TLBShootdownRequest &request)
                break;
             }
 
-            // _USER_THREAD sleep here
-            // wait_sem->wait();
+            // Process any self-initiated requests that are also in the buffer.
+            // ACKs from other cores are delivered via networkHandleTLBShootdownAck
+            // (called on the SIM thread), which removes them from pending_cores.
+            // IDLE cores ACK immediately in networkHandleTLBShootdownRequest,
+            // so no polling is needed here.
             processTLBShootdownBuffer(true);
             bool done = false;
             {
                ScopedLock sl(m_pending_shootdowns_lock);
                auto it = m_pending_shootdowns.find(request.id);
                if (it != m_pending_shootdowns.end()) {
-                  if (it->second.pending_cores.empty()) {
-                     done = true;
-                  }
-               } else {
-                  done = true;
-               }
-            }
-            if (done) {
-               break;
-            }
-         }
-      }
+                   if (it->second.pending_cores.empty()) {
+                      done = true;
+                   }
+                } else {
+                   done = true;
+                }
+             }
+             if (done) {
+                break;
+             }
+          }
+       }
 
        {
           ScopedLock sl(m_pending_shootdowns_lock);

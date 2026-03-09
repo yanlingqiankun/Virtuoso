@@ -169,9 +169,33 @@ core_id_t MimicOS::flushTLB(int app_id, array<IntPtr, TLB_SHOOT_DOWN_MAX_SIZE> p
         }
     }
 
-    // Randomly select one core to issue the TLB shootdown
-    core_id_t issuer_core_id = (rand() % total_cores);
-    Core* issuer_core = core_manager->getCoreFromID(issuer_core_id);
+    // Randomly select one ACTIVE core to issue the TLB shootdown.
+    // IDLE cores (whose TraceThread has exited) cannot process shootdown
+    // requests, so enqueueing on them would cause PTEs to stay in MOVING
+    // state forever, leading to a deadlock.
+    // Fast linear probe from a random starting core to find an ACTIVE core.
+    // IDLE cores (whose TraceThread has exited) cannot process shootdown
+    // requests, so enqueueing on them would cause PTEs to stay in MOVING
+    // state forever, leading to a deadlock. Avoid std::vector allocation.
+    core_id_t start_core_id = rand() % total_cores;
+    core_id_t issuer_core_id = start_core_id;
+    Core* issuer_core = nullptr;
+    bool found = false;
+
+    for (UInt32 i = 0; i < total_cores; i++) {
+        issuer_core = core_manager->getCoreFromID(issuer_core_id);
+        if (issuer_core && issuer_core->getState() != Core::IDLE && issuer_core->getThread() != nullptr) {
+            found = true;
+            break;
+        }
+        issuer_core_id = (issuer_core_id + 1) % total_cores;
+    }
+
+    if (!found) {
+        // Fallback: no active cores, pick core 0 (should not happen in practice)
+        issuer_core_id = 0;
+        issuer_core = core_manager->getCoreFromID(0);
+    }
 
     // Assume page_batch has been prepared (padded) by move_pages
     // Send this batch of TLB Shootdown requests
@@ -234,11 +258,13 @@ bool MimicOS::move_pages(std::queue<Hemem::hemem_page*> src_pages_queue,
         migrate_up_queue.pop();
 
         if (src_page->in_dram == current_migrate_up) {
+            std::cout << "[MimicOS] Skip migration for vaddr: 0x" << std::hex << src_page->vaddr << std::dec << " (Already in target tier)." << std::endl;
             migration_stats.migration_skipped_same_tier++;
             continue;
         }
 
         if (!src_page || src_page->vaddr == 0) {
+             std::cout << "[MimicOS] Skip migration (Invalid page)." << std::endl;
              migration_stats.migration_skipped_invalid++;
              all_succeeded = false;
              continue; // Skip invalid source pages
@@ -318,9 +344,11 @@ bool MimicOS::move_pages(std::queue<Hemem::hemem_page*> src_pages_queue,
 
                 // --- Migration direction stats ---
                 if (current_migrate_up_batch) {
+                    std::cout << "[MimicOS] Successfully promoted page vaddr: 0x" << std::hex << src_page_batch->vaddr << std::dec << " to DRAM." << std::endl;
                     migration_stats.pages_migrated_to_dram++;
                     src_page_batch->migrations_up++;
                 } else {
+                    std::cout << "[MimicOS] Successfully demoted page vaddr: 0x" << std::hex << src_page_batch->vaddr << std::dec << " to NVM." << std::endl;
                     migration_stats.pages_migrated_to_nvm++;
                     src_page_batch->migrations_down++;
                 }
