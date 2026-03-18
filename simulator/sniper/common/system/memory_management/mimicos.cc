@@ -10,6 +10,7 @@
 #include "page_migration/migration_factory.h"
 #include "page_migration/hemem.h"
 #include "core_manager.h"
+#include "performance_model.h"
 #include "hemem_allocator.h"
 #include "site_clock.h"
 #include "pagetable_radix.h"
@@ -57,8 +58,15 @@ MimicOS::MimicOS(bool _is_guest) : m_page_fault_latency(NULL, 0), tlb_flush_late
     // --- Initialize page migration statistics ---
     bzero(&migration_stats, sizeof(migration_stats));
 
-    if (Sim()->getCfg()->hasKey("migration/migration_enable")) {
+    // Determine multi-threaded mode (shared page table) independently of migration
+    if (Sim()->getCfg()->hasKey("traceinput/multi_threaded") &&
+        Sim()->getCfg()->getBool("traceinput/multi_threaded")) {
         one_app = true;
+    } else {
+        one_app = false;
+    }
+
+    if (Sim()->getCfg()->hasKey("migration/migration_enable")) {
         page_migration_handler = MigrationFactory::createMigration(mimicos_name);
         if (page_migration_handler) {
             TLB_SHOOT_DOWN_SIZE = Sim()->getCfg()->getInt("migration/tlb_shootdown_size");
@@ -99,10 +107,31 @@ MimicOS::MimicOS(bool _is_guest) : m_page_fault_latency(NULL, 0), tlb_flush_late
     registerStatsMetric(mimicos_name, 0, "beneficial_dram_access_samples", &migration_stats.beneficial_dram_access_samples);
     registerStatsMetric(mimicos_name, 0, "penalized_nvm_access_samples", &migration_stats.penalized_nvm_access_samples);
 
+    // NOMAD stats
+    registerStatsMetric(mimicos_name, 0, "nomad_tpm_attempts", &migration_stats.nomad_tpm_attempts);
+    registerStatsMetric(mimicos_name, 0, "nomad_tpm_commits", &migration_stats.nomad_tpm_commits);
+    registerStatsMetric(mimicos_name, 0, "nomad_tpm_aborts", &migration_stats.nomad_tpm_aborts);
+    registerStatsMetric(mimicos_name, 0, "nomad_fast_demotions", &migration_stats.nomad_fast_demotions);
+    registerStatsMetric(mimicos_name, 0, "nomad_traditional_demotions", &migration_stats.nomad_traditional_demotions);
+    registerStatsMetric(mimicos_name, 0, "nomad_shadow_faults", &migration_stats.nomad_shadow_faults);
+
     if (Sim()->getCfg()->hasKey("site/enabled"))
         m_site_enabled = Sim()->getCfg()->getBool("site/enabled");
     else
         m_site_enabled = false;
+
+    // NOMAD: cache config at initialization
+    m_nomad_enabled = false;
+    m_nomad_copy_latency_us = 1;
+    if (Sim()->getCfg()->hasKey("nomad/enabled")) {
+        m_nomad_enabled = Sim()->getCfg()->getBool("nomad/enabled");
+    }
+    if (Sim()->getCfg()->hasKey("nomad/copy_latency_us")) {
+        m_nomad_copy_latency_us = Sim()->getCfg()->getInt("nomad/copy_latency_us");
+    }
+    if (m_nomad_enabled) {
+        std::cout << "[MimicOS] NOMAD TPM enabled (copy_latency=" << m_nomad_copy_latency_us << "us)" << std::endl;
+    }
 }
 
 MimicOS::~MimicOS()
@@ -117,9 +146,13 @@ MimicOS::~MimicOS()
  * @param page_batch A fixed-size array containing the virtual addresses to be flushed.
  * The caller (e.g., move_pages) is responsible for ensuring this array
  * is correctly padded (filled with 0s if not full).
+ * @param phy_batch A fixed-size array containing the corresponding physical addresses
+ * for cache flushing. Cache coherence is physical-address based, so the
+ * initiator uses these to send NULLIFY_REQ to the correct directory nodes.
+ * @param page_num Number of valid entries in the batch.
  * @return core_id_t The ID of the core that issued this request.
  */
-core_id_t MimicOS::flushTLB(int app_id, array<IntPtr, TLB_SHOOT_DOWN_MAX_SIZE> page_batch, int page_num)
+core_id_t MimicOS::flushTLB(int app_id, array<IntPtr, TLB_SHOOT_DOWN_MAX_SIZE> page_batch, array<IntPtr, TLB_SHOOT_DOWN_MAX_SIZE> phy_batch, int page_num)
 {
     CoreManager *core_manager = Sim()->getCoreManager();
     UInt32 total_cores = Sim()->getConfig()->getTotalCores();
@@ -169,15 +202,12 @@ core_id_t MimicOS::flushTLB(int app_id, array<IntPtr, TLB_SHOOT_DOWN_MAX_SIZE> p
         }
     }
 
-    // Randomly select one ACTIVE core to issue the TLB shootdown.
+    // Round-robin selection of an ACTIVE core to issue the TLB shootdown.
     // IDLE cores (whose TraceThread has exited) cannot process shootdown
     // requests, so enqueueing on them would cause PTEs to stay in MOVING
     // state forever, leading to a deadlock.
-    // Fast linear probe from a random starting core to find an ACTIVE core.
-    // IDLE cores (whose TraceThread has exited) cannot process shootdown
-    // requests, so enqueueing on them would cause PTEs to stay in MOVING
-    // state forever, leading to a deadlock. Avoid std::vector allocation.
-    core_id_t start_core_id = rand() % total_cores;
+    // Linear probe from the round-robin position to find an ACTIVE core.
+    core_id_t start_core_id = m_rr_issuer_counter.fetch_add(1, std::memory_order_relaxed) % total_cores;
     core_id_t issuer_core_id = start_core_id;
     Core* issuer_core = nullptr;
     bool found = false;
@@ -199,7 +229,7 @@ core_id_t MimicOS::flushTLB(int app_id, array<IntPtr, TLB_SHOOT_DOWN_MAX_SIZE> p
 
     // Assume page_batch has been prepared (padded) by move_pages
     // Send this batch of TLB Shootdown requests
-    issuer_core->enqueueTLBShootdownRequest(page_batch, issuer_core_id, app_id, page_num);
+    issuer_core->enqueueTLBShootdownRequest(page_batch, phy_batch, issuer_core_id, app_id, page_num);
 
     return issuer_core_id;
 }
@@ -246,6 +276,7 @@ bool MimicOS::move_pages(std::queue<Hemem::hemem_page*> src_pages_queue,
 
     // --- Arrays for flushTLB and DMA_map ---
     std::array<IntPtr, TLB_SHOOT_DOWN_MAX_SIZE> batch_vaddrs_array{};
+    std::array<IntPtr, TLB_SHOOT_DOWN_MAX_SIZE> batch_old_phy_addrs_array{};  // current physical addresses (for cache flush)
     std::array<IntPtr, TLB_SHOOT_DOWN_MAX_SIZE> batch_new_phy_addrs_array{};
     int batch_count = 0;
 
@@ -286,6 +317,7 @@ bool MimicOS::move_pages(std::queue<Hemem::hemem_page*> src_pages_queue,
 
             // Fill info into arrays (for steps 2, 3, 7)
             batch_vaddrs_array[batch_count] = src_page->vaddr;
+            batch_old_phy_addrs_array[batch_count] = src_page->phy_addr; // Current physical address (for cache flush)
             batch_new_phy_addrs_array[batch_count] = dst_page->phy_addr; // This is the new physical address the vaddr will use
             batch_count++;
         }
@@ -300,6 +332,7 @@ bool MimicOS::move_pages(std::queue<Hemem::hemem_page*> src_pages_queue,
                 // If this is the last batch and it's not full, pad with 0s
                 for (int i = batch_count; i < TLB_SHOOT_DOWN_SIZE; ++i) {
                     batch_vaddrs_array[i] = 0; // Mark as invalid
+                    batch_old_phy_addrs_array[i] = 0; // Mark as invalid
                     batch_new_phy_addrs_array[i] = 0; // Mark as invalid
                 }
             }
@@ -321,7 +354,7 @@ bool MimicOS::move_pages(std::queue<Hemem::hemem_page*> src_pages_queue,
             // Pass the pre-filled array directly
             // cout << "flush tlb : 0x" << batch_vaddrs_array[0] << endl;
             migration_stats.tlb_shootdown_batches++;
-            issuer_core_id = flushTLB(app_id, batch_vaddrs_array, batch_count);
+            issuer_core_id = flushTLB(app_id, batch_vaddrs_array, batch_old_phy_addrs_array, batch_count);
 
             // --- At this point, TLBs for this batch are clean ---
 
@@ -478,7 +511,7 @@ void MimicOS::DMA_migrate(IntPtr move_id, subsecond_time_t finish_time, int app_
 
         // 6. Update the Page Table (PTE), pointing the vaddr to the new_paddr
         migration_stats.dma_migrations_completed++;
-        pt->DMA_move_page(vaddr, finish_time);
+        pt->DMA_move_page(vaddr, new_paddr, finish_time);
     }
 
     // 7. Processing is complete, remove this entry from the map

@@ -64,7 +64,12 @@ namespace Hemem {
         UInt64 scan_interval_us;
         UInt64 policy_interval_us;
         UInt64 cold_threshold;             // Hotness threshold: DRAM pages at or below this are considered cold for demotion
+        UInt64 cold_threshold_min;         // Minimum cold threshold (most aggressive demotion)
+        UInt64 cold_threshold_max;         // Maximum cold threshold (most conservative demotion)
+        UInt64 min_age_epochs;             // Minimum page age (in epochs) before it can be demoted
         UInt64 epochs_per_decay;           // Number of epochs that must pass for one decay (right-shift by 1)
+        UInt64 warmup_epochs;              // Number of initial epochs during which demotion is suppressed
+        size_t dram_free_threshold;        // Minimum free DRAM pages required before demotion is triggered
         UInt64 proactive_demotions;        // Counter: pages proactively demoted from DRAM
         UInt64 direct_promotions;          // Counter: pages promoted directly (DRAM had free space)
         std::mt19937 rng;                  // Random number generator for sampling
@@ -80,6 +85,9 @@ namespace Hemem {
 
         // Helper to get normalized hotness (triggers lazy_cool internally).
         UInt64 get_current_hotness(hemem_page_t* page);
+
+        // Dynamically adjust cold_threshold based on DRAM pressure and promotion demand.
+        void update_cold_threshold();
 
         // Interface to OS simulator for moving pages
         void batch_migrate(const std::vector<hemem_page_t*>& to_promote,

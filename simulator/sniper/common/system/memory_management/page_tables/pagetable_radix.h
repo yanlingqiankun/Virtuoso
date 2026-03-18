@@ -75,7 +75,7 @@ namespace ParametricDramDirectoryMSI
 		int updatePageTableFrames(IntPtr address, IntPtr core_id, IntPtr ppn, int page_size, std::vector<UInt64> frames);
 		void deletePage(IntPtr address);
 		void page_moving(IntPtr address) override;
-		void DMA_move_page(IntPtr address, subsecond_time_t finish_time) override;
+		void DMA_move_page(IntPtr address, IntPtr new_ppn, subsecond_time_t finish_time) override;
 		IntPtr getPhysicalSpace(int size);
 		String getType() { return "radix"; };
 		int getMaxLevel() { return levels; };

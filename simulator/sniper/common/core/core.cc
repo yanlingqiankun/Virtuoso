@@ -89,6 +89,8 @@ Core::Core(SInt32 id)
    , m_instructions_hpi_callback(0)
    , m_instructions_hpi_last(0)
    , m_shmem_perf(new ShmemPerf())
+   , m_tlb_shootdown_total_time(SubsecondTime::Zero())
+   , m_tlb_shootdown_count(0)
 {
    LOG_PRINT("Core ctor for: %d", id);
 
@@ -96,6 +98,8 @@ Core::Core(SInt32 id)
    registerStatsMetric("core", id, "spin_loops", &m_spin_loops);
    registerStatsMetric("core", id, "spin_instructions", &m_spin_instructions);
    registerStatsMetric("core", id, "spin_elapsed_time", &m_spin_elapsed_time);
+   registerStatsMetric("core", id, "tlb_shootdown_total_time", &m_tlb_shootdown_total_time);
+   registerStatsMetric("core", id, "tlb_shootdown_count", &m_tlb_shootdown_count);
 
    Sim()->getStatsManager()->logTopology("hwcontext", id, id);
 
@@ -114,8 +118,12 @@ Core::Core(SInt32 id)
    if (Sim()->getCfg()->hasKey("migration/migration_enable")) {
       int sampling_frequency = Sim()->getCfg()->getInt("migration/sampling_frequency");
       page_tracer = new PageTracer(sampling_frequency);
+      ipi_initiate_latency = SubsecondTime::NS(Sim()->getCfg()->getInt("migration/ipi_initiate_latency"));
+      ipi_handle_latency   = SubsecondTime::NS(Sim()->getCfg()->getInt("migration/ipi_handle_latency"));
    } else {
       page_tracer = new PageTracer();
+      ipi_initiate_latency = SubsecondTime::Zero();
+      ipi_handle_latency   = SubsecondTime::Zero();
    }
 
 }
@@ -680,6 +688,7 @@ void Core::networkHandleTLBShootdownRequest(PrL1PrL2DramDirectoryMSI::ShmemMsg *
 
     enqueueTLBShootdownRequest(
        payload->addrs,
+       payload->phy_addrs,
        shmem_msg->getRequester(),
        payload->app_id,
        payload->page_num
@@ -744,13 +753,14 @@ void Core::networkHandleTLBShootdownAck(PrL1PrL2DramDirectoryMSI::ShmemMsg *shme
  * It can be called by the local OS thread (to initiate a broadcast)
  * or by the network thread (in response to a broadcast).
  */
-void Core::enqueueTLBShootdownRequest(std::array<IntPtr, TLB_SHOOT_DOWN_MAX_SIZE> &pages_array, core_id_t init_id, int app_id, int page_num)
+void Core::enqueueTLBShootdownRequest(std::array<IntPtr, TLB_SHOOT_DOWN_MAX_SIZE> &pages_array, std::array<IntPtr, TLB_SHOOT_DOWN_MAX_SIZE> &phy_addrs, core_id_t init_id, int app_id, int page_num)
 {
     {
        ScopedLock sl(m_tlb_shootdown_buffer_lock);
 
        TLBShootdownRequest request;
        request.addrs = pages_array;
+       request.phy_addrs = phy_addrs;
        request.app_id = app_id;
        request.initiator_core_id = init_id;
        request.timestamp = getPerformanceModel()->getElapsedTime();
@@ -758,6 +768,7 @@ void Core::enqueueTLBShootdownRequest(std::array<IntPtr, TLB_SHOOT_DOWN_MAX_SIZE
        request.pages_num = page_num;
 
        m_tlb_shootdown_buffer.push(request);
+       m_tlb_shootdown_pending.store(true, std::memory_order_release);
     }
 
     // If the target core's thread is stalled, send an IPI to wake it up 
@@ -813,6 +824,14 @@ void Core::processTLBShootdownBuffer(bool processing_remote_only)
             }
          }
       }
+
+      // Update the lock-free pending flag.
+      // New requests may have arrived during processing, so re-check under lock.
+      {
+         ScopedLock sl(m_tlb_shootdown_buffer_lock);
+         if (m_tlb_shootdown_buffer.empty())
+            m_tlb_shootdown_pending.store(false, std::memory_order_release);
+      }
 }
 
 void Core::handleRemoteTLBShootdownRequest(TLBShootdownRequest &request)
@@ -833,8 +852,10 @@ void Core::handleRemoteTLBShootdownRequest(TLBShootdownRequest &request)
          flush_result.at(i) = flushed;
       }
 
-      // 1b.  _USER_THREAD += ipi_handle_latency
-      getPerformanceModel()->getFastforwardPerformanceModel()->incrementElapsedTime(ipi_handle_latency);
+      // 1b. Stall this core for the TLB-flush handling cost.
+      // Classified as migration idle so it appears in "Idle time" in sim.out
+      // and in per-core cpiSyncMigration for fine-grained analysis.
+      getPerformanceModel()->incrementMigrationIdleTime(ipi_handle_latency);
 
    } // m_mem_lock release
 
@@ -888,17 +909,21 @@ void Core::handleIPIInterrupt()
  */
 void Core::initiateTLBShootdownBroadcast(TLBShootdownRequest &request)
 {
-      // 1.Flush local cache
-       // for (int i = 0; i < TLB_SHOOT_DOWN_SIZE; i++) {
-       //    getMemoryManager()->flushCachePage(request.addrs.at(i), MemComponent::L1_DCACHE);
-       // }
+      // 1.Flush local cache using physical addresses (cache coherence is physical-address based)
+       for (int i = 0; i < TLB_SHOOT_DOWN_SIZE; i++) {
+          if (request.phy_addrs.at(i) != 0)
+             getMemoryManager()->flushCachePage(request.phy_addrs.at(i), MemComponent::L1_DCACHE);
+       }
       // getMemoryManager()->flushEntireL1DCache();
        int num_to_wait_for = 0;
 
        // 2. Create pending shootdown record
        {
            ScopedLock sl(m_pending_shootdowns_lock);
-           getPerformanceModel()->getFastforwardPerformanceModel()->incrementElapsedTime(ipi_initiate_latency);
+           // Stall the issuer core for the IPI-initiate overhead.
+           // Classified as migration idle so it appears in "Idle time" in sim.out
+           // and in per-core cpiSyncMigration for fine-grained analysis.
+           getPerformanceModel()->incrementMigrationIdleTime(ipi_initiate_latency);
 
            PendingShootdown pending;
            pending.max_end_time = getPerformanceModel()->getElapsedTime();
@@ -923,7 +948,7 @@ void Core::initiateTLBShootdownBroadcast(TLBShootdownRequest &request)
           m_pending_shootdowns[request.id] = pending;
        }
 
-
+       SubsecondTime start_send_ipi = getPerformanceModel()->getElapsedTime();
        // 3. Send shootdown request to all other cores (via "direct function call")
 #ifdef TLB_SHOOTDOWN_DEBUG
       cout << "core "<< getId() << " broadcast tlb flush request = 0x" <<request.addrs.at(0) << endl;
@@ -933,6 +958,7 @@ void Core::initiateTLBShootdownBroadcast(TLBShootdownRequest &request)
          payload.app_id = request.app_id;
          payload.request_id = request.id;
          payload.addrs = request.addrs;
+         payload.phy_addrs = request.phy_addrs;
          payload.page_num = request.pages_num;
          getMemoryManager()->broadcastMsg(
             PrL1PrL2DramDirectoryMSI::ShmemMsg::TLB_SHOOTDOWN_REQ,
@@ -949,8 +975,10 @@ void Core::initiateTLBShootdownBroadcast(TLBShootdownRequest &request)
            IntPtr addr = request.addrs.at(i);
            m_memory_manager->MMFlushTLB(request.app_id, addr, NONE, MEM_MODELED_NONE);
        }
-       // Account for local flush latency
-       getPerformanceModel()->getFastforwardPerformanceModel()->incrementElapsedTime(ipi_handle_latency);
+       // Account for issuer core's own TLB flush cost.
+       // Classified as migration idle so it appears in "Idle time" in sim.out
+       // and in per-core cpiSyncMigration for fine-grained analysis.
+       getPerformanceModel()->incrementMigrationIdleTime(ipi_handle_latency);
 #ifdef TLB_SHOOTDOWN_DEBUG
       cout << "core "<< getId() << " waiting reply for request = 0x" << request.addrs.at(0) << endl;
 #endif
@@ -990,6 +1018,12 @@ void Core::initiateTLBShootdownBroadcast(TLBShootdownRequest &request)
           ScopedLock sl(m_pending_shootdowns_lock);
           m_pending_shootdowns.erase(request.id); // Remove the record from the map
        }
+       SubsecondTime end_send_ipi = getPerformanceModel()->getElapsedTime();
+
+       // Accumulate per-core TLB shootdown time
+       SubsecondTime shootdown_duration = end_send_ipi - start_send_ipi;
+       m_tlb_shootdown_total_time += shootdown_duration;
+       m_tlb_shootdown_count++;
 
       Sim()->getMimicOS()->DMA_migrate(request.id, getShmemPerfModel()->getElapsedTime(ShmemPerfModel::_USER_THREAD), request.app_id);
 

@@ -100,6 +100,7 @@ namespace PrL1PrL2DramDirectoryMSI
          case UPGRADE_REQ:
          case INV_REP:
          case DRAM_READ_REQ:
+         case NULLIFY_REQ:
             // msg_type + address
             // msg_type - 1 byte
             return (1 + sizeof(IntPtr));

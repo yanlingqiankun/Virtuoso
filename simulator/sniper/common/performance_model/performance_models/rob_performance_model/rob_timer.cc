@@ -877,6 +877,12 @@ void RobTimer::execute(uint64_t& instructionsExecuted, SubsecondTime& latency)
    instructionsExecuted = 0;
    SubsecondTime *cpiComponent = NULL;
 
+   // Process any pending TLB shootdown requests so that other cores waiting
+   // for our ACK are not blocked while we drain the ROB.  The lock-free
+   // atomic check makes this essentially free on the fast path.
+   if (m_core->m_tlb_shootdown_pending.load(std::memory_order_acquire))
+      m_core->processTLBShootdownBuffer(false);
+
    #ifdef DEBUG_PERCYCLE
       std::cout<<std::endl;
       std::cout<<"Running cycle "<<now<<std::endl;

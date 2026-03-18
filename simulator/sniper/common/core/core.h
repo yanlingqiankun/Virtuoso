@@ -24,6 +24,7 @@ class CheetahManager;
 #include "hit_where.h"
 #include <vector>
 #include <map>
+#include <atomic>
 #include <queue>
 #include <set>
 #include "network.h"
@@ -168,11 +169,13 @@ class Core
          core_id_t initiator_core_id;
          SubsecondTime timestamp;
          IntPtr id;  // use address of the first page to identify request
-         std::array<IntPtr, TLB_SHOOT_DOWN_MAX_SIZE> addrs;
+         std::array<IntPtr, TLB_SHOOT_DOWN_MAX_SIZE> addrs;      // virtual addresses
+         std::array<IntPtr, TLB_SHOOT_DOWN_MAX_SIZE> phy_addrs;  // physical addresses (for cache flush)
          int pages_num;
       };
       std::queue<TLBShootdownRequest> m_tlb_shootdown_buffer;
       Lock m_tlb_shootdown_buffer_lock;
+      std::atomic<bool> m_tlb_shootdown_pending{false}; // Lock-free flag for fast-path check
 
       // 用于跟踪等待的 shootdown 响应
       struct PendingShootdown {
@@ -188,7 +191,8 @@ class Core
       struct TLBShootdownRequestPayload {
          int app_id;
          IntPtr request_id; // Unique ID (e.g., pages_array.front())
-         std::array<IntPtr, TLB_SHOOT_DOWN_MAX_SIZE> addrs;
+         std::array<IntPtr, TLB_SHOOT_DOWN_MAX_SIZE> addrs;      // virtual addresses
+         std::array<IntPtr, TLB_SHOOT_DOWN_MAX_SIZE> phy_addrs;  // physical addresses (for cache flush)
          int page_num;
       };
 
@@ -202,7 +206,7 @@ class Core
 
       void initiateTLBShootdownBroadcast(TLBShootdownRequest &request);
 
-      void enqueueTLBShootdownRequest(std::array<IntPtr, TLB_SHOOT_DOWN_MAX_SIZE> &pages_queue, core_id_t init_id, int app_id, int page_num); //向 buffer 中添加 TLB shootdown 请求
+      void enqueueTLBShootdownRequest(std::array<IntPtr, TLB_SHOOT_DOWN_MAX_SIZE> &pages_queue, std::array<IntPtr, TLB_SHOOT_DOWN_MAX_SIZE> &phy_addrs, core_id_t init_id, int app_id, int page_num); //向 buffer 中添加 TLB shootdown 请求
       void processTLBShootdownBuffer(bool processing_remote_only); // 处理 buffer 中的 TLB shootdown 请求
       void handleRemoteTLBShootdownRequest(TLBShootdownRequest &request);
       void handleIPIInterrupt();           // Process TLB shootdown in "kernel mode" (called from Thread::wait)
@@ -254,6 +258,8 @@ class Core
       SubsecondTime tlb_flush_latency;
       SubsecondTime ipi_initiate_latency;
       SubsecondTime ipi_handle_latency;
+      SubsecondTime m_tlb_shootdown_total_time;
+      UInt64 m_tlb_shootdown_count;
 
    protected:
       // Optimized version of countInstruction has direct access to m_instructions and m_instructions_callback

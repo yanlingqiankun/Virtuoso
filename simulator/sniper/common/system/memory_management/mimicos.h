@@ -11,6 +11,7 @@
 #include "stats.h"
 #include <unordered_map>
 #include <mutex>
+#include <atomic>
 
 #include "page_migration/memtis.h"
 
@@ -63,6 +64,15 @@ private:
 
     bool one_app;
     bool m_site_enabled;
+    bool m_nomad_enabled;
+    UInt64 m_nomad_copy_latency_us;
+
+    std::atomic<uint32_t> m_rr_issuer_counter{0}; // Round-robin counter for TLB shootdown issuer selection
+
+    // NOMAD: internal TPM + fast demotion implementation
+    bool move_pages_nomad(std::queue<Hemem::hemem_page*> pages, std::queue<bool> migrate_up, int app_id);
+    // Original blocking migration (used by move_pages when NOMAD disabled, and as fallback for dirty demotions)
+    bool move_pages_traditional(std::queue<Hemem::hemem_page*> pages, std::queue<bool> migrate_up, int app_id);
 
 
     // Page migration statistics
@@ -83,6 +93,13 @@ private:
         UInt64 site_shootdowns_performed;    // SITE: Shootdowns still required (entries not yet expired)
         UInt64 beneficial_dram_access_samples;  // Access samples that hit a page migrated to DRAM (Benefit = samples * frequency * latency_diff)
         UInt64 penalized_nvm_access_samples;    // Access samples that hit a page migrated down to NVM (Penalty = samples * frequency * latency_diff)
+        // NOMAD statistics
+        UInt64 nomad_tpm_attempts;
+        UInt64 nomad_tpm_commits;
+        UInt64 nomad_tpm_aborts;
+        UInt64 nomad_fast_demotions;
+        UInt64 nomad_traditional_demotions;
+        UInt64 nomad_shadow_faults;
     } migration_stats;
 
 public:
@@ -120,7 +137,7 @@ public:
 
     PageMigration *getPageMigrationHandler() { return page_migration_handler; }
     SubsecondTime getTLBFlushLatency() {return tlb_flush_latency.getLatency(); }
-    core_id_t flushTLB(int app_id, array<IntPtr, TLB_SHOOT_DOWN_MAX_SIZE> addrs, int page_num);
+    core_id_t flushTLB(int app_id, array<IntPtr, TLB_SHOOT_DOWN_MAX_SIZE> addrs, array<IntPtr, TLB_SHOOT_DOWN_MAX_SIZE> phy_addrs, int page_num);
     bool move_pages(std::queue<Hemem::hemem_page*> pages, std::queue<bool> migrate_up, int app_id);
     void DMA_migrate(IntPtr move_id, subsecond_time_t finish_time, int app_id = 0);
     bool move_pages_syscall(std::queue<IntPtr> src_pages_address_queue, std::queue<bool> migrate_up_queue, int app_id);

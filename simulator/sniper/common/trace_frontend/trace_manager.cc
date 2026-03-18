@@ -100,16 +100,20 @@ thread_id_t TraceManager::newThread(app_id_t app_id, bool first, bool init_fifo,
 
    assert(static_cast<decltype(app_id)>(m_num_apps) > app_id);
 
+   // For multi-threaded simulation, all threads share a single OS app_id (0)
+   // so they use the same page table and address space.
+   // Each thread still needs its own trace file.
+   app_id_t trace_app_id = app_id;  // Preserve original id for trace file selection
+   if (Sim()->getCfg()->hasKey("traceinput/multi_threaded") &&
+       Sim()->getCfg()->getBool("traceinput/multi_threaded")) {
+       app_id = 0;
+   }
+
    // @hsongara: Instantiate applications
    // For non-virtualized environments:
    // Create (only) one App Instance for the Host, this is the hypervisor application
    // For virtualized environments:
    // Create one App Instance for the application in the VM
-
-    // Choosing an inaccurate way to simulate multiple threads
-    if (Sim()->getCfg()->hasKey("migration/migration_enable")) {
-        app_id = 0;
-    }
 
    if (Sim()->isVirtualizedSystem() == true) {
       app_id_t vm_id = 0;
@@ -146,9 +150,11 @@ thread_id_t TraceManager::newThread(app_id_t app_id, bool first, bool init_fifo,
 
      if (!init_fifo)
      {
-       tracefile = m_tracefiles[app_id];
+       // Use trace_app_id (the original, pre-remap id) to select the correct
+       // trace file so each thread loads its own trace, not all thread_0's.
+       tracefile = m_tracefiles[trace_app_id];
        if (m_responsefiles.size())
-         responsefile = m_responsefiles[app_id];
+         responsefile = m_responsefiles[trace_app_id];
      }
    }
    else

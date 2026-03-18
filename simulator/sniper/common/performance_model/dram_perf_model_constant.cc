@@ -69,7 +69,7 @@ DramPerfModelConstant::getAccessLatency(SubsecondTime pkt_time, UInt64 pkt_size,
    {
       queue_delay = SubsecondTime::Zero();
    }
-   if (address <= dram_size) {
+   if (address < dram_size) {
       memory_access_cost = m_dram_access_cost;
       dram_access ++;
    } else {

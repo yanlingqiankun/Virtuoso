@@ -41,10 +41,17 @@ namespace Hemem {
         UInt64 migrations_up, migrations_down;
         bool ring_present;
         UInt64 local_clock;
+        UInt64 birth_epoch;  // Epoch when this page was first allocated (used to guard against premature demotion)
         UInt64 accesses[NPBUFTYPES];
         UInt64 tot_accesses[NPBUFTYPES];
 
         UInt64 phy_addr;
+
+        // --- NOMAD Shadow Page fields ---
+        UInt64 shadow_pfn;     // Shadow PFN in slow tier (valid when pg_shadow==true)
+        bool pg_shadow;        // Has valid shadow copy in slow tier
+        bool shadow_rw;        // Original permission was writable (before NOMAD write-protect)
+
         hemem_page_t *next, *prev;
         fifo_list_t *list;
 
@@ -61,7 +68,11 @@ namespace Hemem {
             migrations_up = migrations_down = 0;
             ring_present = false;
             local_clock = 0;
+            birth_epoch = 0;
             phy_addr = 0;
+            shadow_pfn = 0;
+            pg_shadow = false;
+            shadow_rw = false;
             next = prev = nullptr;
             list = nullptr;
         }

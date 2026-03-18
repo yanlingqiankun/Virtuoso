@@ -62,7 +62,7 @@ namespace ParametricDramDirectoryMSI
 		virtual void deletePage(IntPtr address) {};
 		virtual void page_moving(IntPtr address) {};
 		virtual void move_pages(std::queue<IntPtr> source, std::queue<IntPtr> dst) {};
-		virtual void DMA_move_page(IntPtr address, subsecond_time_t finish_time) {};
+		virtual void DMA_move_page(IntPtr address, IntPtr new_ppn, subsecond_time_t finish_time) {};
 		virtual int updatePageTableFrames(IntPtr address, IntPtr core_id, IntPtr ppn, int page_size, std::vector<UInt64> frames) = 0;
 		virtual std::shared_mutex& get_lock_for_page(IntPtr address) { std::shared_mutex ret; return ret; };
 		virtual bool check_page_exist(IntPtr address) {return true;}

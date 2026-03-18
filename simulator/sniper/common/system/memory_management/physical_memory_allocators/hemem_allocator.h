@@ -43,10 +43,9 @@ private:
     int page_size = 4096;
     std::mutex mutex_alloc;
     UInt64 dram_reserved_threshold;
-    UInt64 m_dram_size_bytes;
-    UInt64 m_nvm_size_bytes;
-    UInt64 m_kernel_size_bytes;
-    UInt64 m_dram_size_pages;  // = m_dram_size_bytes / PAGE_SIZE, used to convert NVM byte addr -> NVM page number for buddy->free()
+    UInt64 m_dram_size_pages;   // DRAM size in pages — also serves as the NVM page-number offset
+    UInt64 m_nvm_size_pages;    // NVM size in pages
+    bool m_migration_enabled;   // Cached at construction time to avoid repeated config lookups
 
     Hemem::hemem_page* create_active_page(UInt64 phy_addr, bool is_dram);
     void destroy_active_page(UInt64 phy_addr);

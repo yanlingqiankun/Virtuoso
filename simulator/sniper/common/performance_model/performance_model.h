@@ -42,6 +42,12 @@ public:
    void handleMemoryLatency(SubsecondTime latency, HitWhere::where_t hit_where);
    void handleBranchMispredict();
 
+   // Called from core.cc to account for time a core is stalled due to
+   // page-migration TLB shootdowns. This time is classified as idle
+   // (not executing useful instructions) and broken out into its own
+   // CPI component so it is visible in per-core stats.
+   void incrementMigrationIdleTime(SubsecondTime time);
+
    static PerformanceModel *create(Core* core);
 
    BranchPredictor *getBranchPredictor() { return m_bp; }
@@ -141,6 +147,7 @@ private:
    SubsecondTime m_cpiSyncSyscall;
    SubsecondTime m_cpiSyncUnscheduled;
    SubsecondTime m_cpiSyncDvfsTransition;
+   SubsecondTime m_cpiSyncMigration;   // Time stalled due to page-migration TLB shootdowns
    SubsecondTime m_cpiRecv;
 
    InstructionQueue m_instruction_queue;

@@ -19,6 +19,8 @@
 #define DEFAULT_HOT_THRESHOLD 2          // Access count to trigger fast promotion
 #define DEFAULT_COLD_THRESHOLD 1          // Access count at or below which DRAM pages are considered cold
 #define DEFAULT_EPOCHS_PER_DECAY 4        // Number of epochs per one halving of hotness
+#define DEFAULT_WARMUP_EPOCHS 10            // Number of initial epochs during which demotion is suppressed
+#define DEFAULT_MIN_AGE_EPOCHS 5              // Minimum epochs a DRAM page must live before eligible for demotion
 
 namespace Hemem {
 
@@ -33,6 +35,9 @@ namespace Hemem {
           hot_threshold(DEFAULT_HOT_THRESHOLD),
           cold_threshold(DEFAULT_COLD_THRESHOLD),
           epochs_per_decay(DEFAULT_EPOCHS_PER_DECAY),
+          warmup_epochs(DEFAULT_WARMUP_EPOCHS),
+          min_age_epochs(DEFAULT_MIN_AGE_EPOCHS),
+          dram_free_threshold(0),
           proactive_demotions(0),
           direct_promotions(0)
     {
@@ -49,9 +54,20 @@ namespace Hemem {
             epochs_per_decay = Sim()->getCfg()->getInt("migration/epochs_per_decay");
         }
         if (epochs_per_decay == 0) epochs_per_decay = 1; // Guard against division by zero
+        if (Sim()->getCfg()->hasKey("migration/warmup_epochs")) {
+            warmup_epochs = Sim()->getCfg()->getInt("migration/warmup_epochs");
+        }
+        if (Sim()->getCfg()->hasKey("migration/min_age_epochs")) {
+            min_age_epochs = Sim()->getCfg()->getInt("migration/min_age_epochs");
+        }
+        if (Sim()->getCfg()->hasKey("migration/dram_free_threshold")) {
+            dram_free_threshold = Sim()->getCfg()->getInt("migration/dram_free_threshold");
+        }
         std::cout << "[Memtis] Decoupled mode: hot_threshold=" << hot_threshold
                   << ", cold_threshold=" << cold_threshold
-                  << ", epochs_per_decay=" << epochs_per_decay << std::endl;
+                  << ", epochs_per_decay=" << epochs_per_decay
+                  << ", warmup_epochs=" << warmup_epochs
+                  << ", min_age_epochs=" << min_age_epochs << std::endl;
         registerStatsMetric("memtis", 0, "proactive_demotions", &proactive_demotions);
         registerStatsMetric("memtis", 0, "direct_promotions", &direct_promotions);
     }
@@ -99,16 +115,43 @@ namespace Hemem {
         std::unique_lock<std::shared_mutex> lock(page_list_mutex);
 
         auto const& [it, inserted] = all_pages_map.insert({laddr, page});
-        if (inserted) {
-            page->naccesses = 0;
-            page->migrating = false; // Flag to prevent duplicate queuing
 
-            // Initialize local clock to current epoch
-            page->local_clock = current_epoch.load(std::memory_order_relaxed);
+        if (!inserted) {
+            // Re-allocation: same vaddr mapped again (after free + re-mmap).
+            // The old page pointer may be dangling — remove it from tracking lists.
+            hemem_page_t *old_page = it->second;
 
-            if (page->in_dram) dram_pages.push_back(page);
-            else nvm_pages.push_back(page);
+            // Remove old pointer from dram_pages / nvm_pages to avoid use-after-free
+            auto d_it = std::find(dram_pages.begin(), dram_pages.end(), old_page);
+            if (d_it != dram_pages.end()) dram_pages.erase(d_it);
+
+            auto n_it = std::find(nvm_pages.begin(), nvm_pages.end(), old_page);
+            if (n_it != nvm_pages.end()) nvm_pages.erase(n_it);
+
+            // Also clean up from pending promotion queue
+            {
+                std::lock_guard<std::mutex> q_lock(queue_mutex);
+                pending_pages.erase(old_page);
+                auto fq_it = std::find(fast_promotion_queue.begin(),
+                                       fast_promotion_queue.end(), old_page);
+                if (fq_it != fast_promotion_queue.end())
+                    fast_promotion_queue.erase(fq_it);
+            }
+
+            // Update map entry to point to the new page
+            it->second = page;
         }
+
+        // Common initialization for both new and re-allocated pages
+        page->naccesses = 0;
+        page->migrating = false;
+
+        // Initialize / reset local clock and birth epoch to current epoch
+        page->local_clock = current_epoch.load(std::memory_order_relaxed);
+        page->birth_epoch = page->local_clock;
+
+        if (page->in_dram) dram_pages.push_back(page);
+        else nvm_pages.push_back(page);
     }
 
     // === Scan Thread (Producer) ===
@@ -195,68 +238,83 @@ namespace Hemem {
             // Phase 1: Proactive Demotion (Independent of Promotion)
             // Sample DRAM pages, find cold ones, and demote them to NVM.
             // This frees up DRAM space regardless of whether promotions are pending.
+            // Skip demotion during the initial warm-up phase to allow hotness
+            // profiles to stabilize before making demotion decisions.
             // ============================================================
-            {
-                std::vector<hemem_page_t*> cold_pages;
-                {
-                    std::shared_lock<std::shared_mutex> list_lock(page_list_mutex);
+            UInt64 epoch_now = current_epoch.load(std::memory_order_relaxed);
+            if (epoch_now > warmup_epochs) {
+                // Skip demotion if DRAM free pages are above the threshold
+                HememAllocator* allocator = dynamic_cast<HememAllocator*>(
+                    Sim()->getMimicOS()->getMemoryAllocator());
+                size_t dram_free = allocator ? allocator->getDramFreePages() : 0;
 
-                    if (!dram_pages.empty()) {
-                        // Random sample from DRAM pages
-                        std::vector<hemem_page_t*> dram_sample;
-                        size_t actual_sample = std::min(sample_size, dram_pages.size());
-                        std::uniform_int_distribution<size_t> dist(0, dram_pages.size() - 1);
+                if (dram_free_threshold == 0 || dram_free < dram_free_threshold) {
+                    std::vector<hemem_page_t*> cold_pages;
+                    {
+                        std::shared_lock<std::shared_mutex> list_lock(page_list_mutex);
 
-                        // Use a set to avoid sampling the same page twice
-                        std::set<hemem_page_t*> sampled;
-                        for (size_t i = 0; i < actual_sample; ++i) {
-                            hemem_page_t* p = dram_pages[dist(rng)];
-                            if (sampled.insert(p).second) {
-                                dram_sample.push_back(p);
+                        if (!dram_pages.empty()) {
+                            // Random sample from DRAM pages
+                            std::vector<hemem_page_t*> dram_sample;
+                            size_t actual_sample = std::min(sample_size, dram_pages.size());
+                            std::uniform_int_distribution<size_t> dist(0, dram_pages.size() - 1);
+
+                            // Use a set to avoid sampling the same page twice
+                            std::set<hemem_page_t*> sampled;
+                            for (size_t i = 0; i < actual_sample; ++i) {
+                                hemem_page_t* p = dram_pages[dist(rng)];
+                                if (sampled.insert(p).second) {
+                                    dram_sample.push_back(p);
+                                }
+                            }
+
+                            // Identify cold pages: hotness at or below cold_threshold
+                            // AND page must have lived in DRAM for at least min_age_epochs
+                            // to avoid demoting freshly-allocated pages before they have a
+                            // chance to accumulate access history.
+                            for (auto* p : dram_sample) {
+                                if (!p->migrating
+                                    && (epoch_now - p->birth_epoch) >= min_age_epochs
+                                    && get_current_hotness(p) <= cold_threshold) {
+                                    cold_pages.push_back(p);
+                                }
+                            }
+
+                            // Sort by hotness ascending (coldest first), limit to batch_size
+                            if (cold_pages.size() > 1) {
+                                std::sort(cold_pages.begin(), cold_pages.end(),
+                                    [&](hemem_page_t* a, hemem_page_t* b) {
+                                        return get_current_hotness(a) < get_current_hotness(b);
+                                    });
+                            }
+                            size_t demote_limit = batch_size.load();
+                            if (cold_pages.size() > demote_limit) {
+                                cold_pages.resize(demote_limit);
                             }
                         }
+                    }
 
-                        // Identify cold pages: hotness at or below cold_threshold
-                        for (auto* p : dram_sample) {
-                            if (!p->migrating && get_current_hotness(p) <= cold_threshold) {
-                                cold_pages.push_back(p);
-                            }
-                        }
+                    // Execute demotion
+                    if (!cold_pages.empty()) {
+                        std::vector<hemem_page_t*> empty_promote;
+                        batch_migrate(empty_promote, cold_pages);
+                        proactive_demotions += cold_pages.size();
 
-                        // Sort by hotness ascending (coldest first), limit to batch_size
-                        if (cold_pages.size() > 1) {
-                            std::sort(cold_pages.begin(), cold_pages.end(),
-                                [&](hemem_page_t* a, hemem_page_t* b) {
-                                    return get_current_hotness(a) < get_current_hotness(b);
-                                });
-                        }
-                        size_t demote_limit = batch_size.load();
-                        if (cold_pages.size() > demote_limit) {
-                            cold_pages.resize(demote_limit);
+                        // Update global lists
+                        std::unique_lock<std::shared_mutex> list_lock(page_list_mutex);
+
+                        // Remove successfully demoted pages from dram_pages
+                        auto d_it = std::remove_if(dram_pages.begin(), dram_pages.end(),
+                            [](hemem_page_t* p) { return !p->in_dram; });
+                        dram_pages.erase(d_it, dram_pages.end());
+
+                        // Add demoted pages to nvm_pages
+                        for (auto* p : cold_pages) {
+                            if (!p->in_dram) nvm_pages.push_back(p);
+                            // else: migration failed, page stays in DRAM (already in dram_pages)
                         }
                     }
-                }
-
-                // Execute demotion
-                if (!cold_pages.empty()) {
-                    std::vector<hemem_page_t*> empty_promote;
-                    batch_migrate(empty_promote, cold_pages);
-                    proactive_demotions += cold_pages.size();
-
-                    // Update global lists
-                    std::unique_lock<std::shared_mutex> list_lock(page_list_mutex);
-
-                    // Remove successfully demoted pages from dram_pages
-                    auto d_it = std::remove_if(dram_pages.begin(), dram_pages.end(),
-                        [](hemem_page_t* p) { return !p->in_dram; });
-                    dram_pages.erase(d_it, dram_pages.end());
-
-                    // Add demoted pages to nvm_pages
-                    for (auto* p : cold_pages) {
-                        if (!p->in_dram) nvm_pages.push_back(p);
-                        // else: migration failed, page stays in DRAM (already in dram_pages)
-                    }
-                }
+                } // end dram_free_threshold check
             }
 
             // ============================================================
@@ -318,7 +376,13 @@ namespace Hemem {
                     nvm_pages.erase(n_it, nvm_pages.end());
 
                     for (auto* p : can_promote) {
-                        if (p->in_dram) dram_pages.push_back(p);
+                        if (p->in_dram) {
+                            dram_pages.push_back(p);
+                            // Reset birth_epoch so the page gets a fresh grace
+                            // period in DRAM, preventing immediate re-demotion
+                            // (ping-pong migration).
+                            p->birth_epoch = current_epoch.load(std::memory_order_relaxed);
+                        }
                         else nvm_pages.push_back(p); // Migration failed, keep in NVM
 
                         pending_pages.erase(p);

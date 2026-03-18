@@ -74,6 +74,17 @@ DramDirectoryCntlr::DramDirectoryCntlr(core_id_t core_id,
    registerStatsMetric("directory", core_id, "forward", &forward);
    registerStatsMetric("directory", core_id, "forward-failed", &forward_failed);
 
+   requests_nullify_internal = 0;
+   requests_nullify_external = 0;
+   nullify_external_flushes_exclusive = 0;
+   nullify_external_flushes_shared = 0;
+   nullify_external_flushes_uncached = 0;
+   registerStatsMetric("directory", core_id, "requests-nullify-internal", &requests_nullify_internal);
+   registerStatsMetric("directory", core_id, "requests-nullify-external", &requests_nullify_external);
+   registerStatsMetric("directory", core_id, "nullify-external-flushes-exclusive", &nullify_external_flushes_exclusive);
+   registerStatsMetric("directory", core_id, "nullify-external-flushes-shared", &nullify_external_flushes_shared);
+   registerStatsMetric("directory", core_id, "nullify-external-flushes-uncached", &nullify_external_flushes_uncached);
+
    String protocol = Sim()->getCfg()->getString("caching_protocol/variant");
    if (protocol == "msi")
    {
@@ -173,6 +184,30 @@ DramDirectoryCntlr::handleMsgFromL2Cache(core_id_t sender, ShmemMsg* shmem_msg)
          processWbRepFromL2Cache(sender, shmem_msg);
          break;
 
+      case ShmemMsg::NULLIFY_REQ:
+      {
+         MYLOG("NULLIFY REQ<%u @ %lx", sender, address);
+         requests_nullify_external++;
+
+         // External NULLIFY_REQ (e.g., from flushCachePage for page migration).
+         // If the directory has no entry for this address, no cache holds it - skip.
+         DirectoryEntry* directory_entry = m_dram_directory_cache->getDirectoryEntry(address);
+         if (directory_entry == NULL)
+         {
+            break;
+         }
+
+         ShmemReq* shmem_req = new ShmemReq(shmem_msg, msg_time);
+         m_dram_directory_req_queue_list->enqueue(address, shmem_req);
+         MYLOG("ENqueued NULLIFY REQ for address %lx", address);
+
+         if (m_dram_directory_req_queue_list->size(address) == 1)
+         {
+            processNullifyReq(shmem_req);
+         }
+         break;
+      }
+
       default:
          LOG_PRINT_ERROR("Unrecognized Shmem Msg Type: %u", shmem_msg_type);
          break;
@@ -255,6 +290,11 @@ DramDirectoryCntlr::processNextReqFromL2Cache(IntPtr address)
          MYLOG("A new UPGRADE_REQ for address(%lx) found", address);
          processUpgradeReqFromL2Cache(shmem_req);
       }
+      else if (shmem_req->getShmemMsg()->getMsgType() == ShmemMsg::NULLIFY_REQ)
+      {
+         MYLOG("A new NULLIFY_REQ for address(%lx) found", address);
+         processNullifyReq(shmem_req);
+      }
       else
          LOG_PRINT_ERROR("Unrecognized Request(%u)", shmem_req->getShmemMsg()->getMsgType());
    }
@@ -302,6 +342,7 @@ DramDirectoryCntlr::processDirectoryEntryAllocationReq(ShmemReq* shmem_req)
    ShmemMsg nullify_msg(ShmemMsg::NULLIFY_REQ, MemComponent::TAG_DIR, MemComponent::TAG_DIR, requester, replaced_address, NULL, 0, &m_dummy_shmem_perf,CacheBlockInfo::block_type_t::NON_PAGE_TABLE);
 
    ShmemReq* nullify_req = new ShmemReq(&nullify_msg, msg_time);
+   requests_nullify_internal++;
 
    m_dram_directory_req_queue_list->enqueue(replaced_address, nullify_req);
    MYLOG("ENqueued NULLIFY request for address %lx", replaced_address );
@@ -326,15 +367,25 @@ DramDirectoryCntlr::processNullifyReq(ShmemReq* shmem_req)
    MYLOG("Start @ %lx", address);
 
    DirectoryEntry* directory_entry = m_dram_directory_cache->getDirectoryEntry(address);
-   assert(directory_entry);
+   if (directory_entry == NULL)
+   {
+      // Directory entry might not exist if this is an external NULLIFY_REQ for an address
+      // that is not currently tracked (e.g., not cached anywhere), or was already
+      // invalidated by a concurrent directory eviction. Nothing to do.
+      processNextReqFromL2Cache(address);
+      return;
+   }
 
    DirectoryBlockInfo* directory_block_info = directory_entry->getDirectoryBlockInfo();
    DirectoryState::dstate_t curr_dstate = directory_block_info->getDState();
+
+   bool is_external = (shmem_req->getShmemMsg()->getSenderMemComponent() != MemComponent::TAG_DIR);
 
    switch (curr_dstate)
    {
       case DirectoryState::EXCLUSIVE:
       case DirectoryState::MODIFIED:
+         if (is_external) nullify_external_flushes_exclusive++;
          //std::cout << "Nullify request: " << __LINE__ << " with address  = " << address << std::endl;
          getMemoryManager()->sendMsg(ShmemMsg::FLUSH_REQ,
                MemComponent::TAG_DIR, MemComponent::L2_CACHE,
@@ -350,6 +401,7 @@ DramDirectoryCntlr::processNullifyReq(ShmemReq* shmem_req)
       case DirectoryState::SHARED:
 
          {
+            if (is_external) nullify_external_flushes_shared += directory_entry->getNumSharers();
             std::pair<bool, std::vector<SInt32> > sharers_list_pair = directory_entry->getSharersList();
             if (sharers_list_pair.first == true)
             {
@@ -386,7 +438,15 @@ DramDirectoryCntlr::processNullifyReq(ShmemReq* shmem_req)
       case DirectoryState::UNCACHED:
 
          {
-            m_dram_directory_cache->invalidateDirectoryEntry(address);
+            if (is_external) nullify_external_flushes_uncached++;
+
+            // Only clean up the replaced-list entry for internal directory eviction
+            // (sender == TAG_DIR). External NULLIFY_REQ (e.g. flushCachePage) leaves
+            // the entry in the main directory set as UNCACHED — no cleanup needed.
+            if (shmem_req->getShmemMsg()->getSenderMemComponent() == MemComponent::TAG_DIR)
+            {
+               m_dram_directory_cache->invalidateDirectoryEntry(address);
+            }
 
             // Process Next Request
             processNextReqFromL2Cache(address);

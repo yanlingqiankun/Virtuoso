@@ -431,7 +431,7 @@ namespace ParametricDramDirectoryMSI
 	}
 
 
-	void PageTableRadix::DMA_move_page(IntPtr address, subsecond_time_t finish_time)
+	void PageTableRadix::DMA_move_page(IntPtr address, IntPtr new_ppn, subsecond_time_t finish_time)
 	{
 		std::unique_lock<std::shared_mutex> lock(get_lock_for_page(address));
 		PTFrame *current_frame = root;
@@ -446,8 +446,8 @@ namespace ParametricDramDirectoryMSI
 
 			if (current_frame->entries[offset].is_pte)
 			{
-				// We don't change the PPN, as the physical page should be protect.
-
+				// Update PPN to the new physical page after migration
+				current_frame->entries[offset].data.translation.ppn = new_ppn;
 				current_frame->entries[offset].DMA_finish = finish_time;
 				current_frame->entries[offset].permission = READ_WRITE;
 				current_frame->entries[offset].data.translation.valid = true;

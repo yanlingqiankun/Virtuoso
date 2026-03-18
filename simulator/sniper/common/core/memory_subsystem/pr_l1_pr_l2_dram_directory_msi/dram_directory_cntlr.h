@@ -36,6 +36,8 @@ namespace PrL1PrL2DramDirectoryMSI
 
          UInt64 evict[DirectoryState::NUM_DIRECTORY_STATES];
          UInt64 forward, forward_failed;
+         UInt64 requests_nullify_internal, requests_nullify_external;
+         UInt64 nullify_external_flushes_exclusive, nullify_external_flushes_shared, nullify_external_flushes_uncached;
 
          UInt32 getCacheBlockSize() { return m_cache_block_size; }
          MemoryManagerBase* getMemoryManager() { return m_memory_manager; }
