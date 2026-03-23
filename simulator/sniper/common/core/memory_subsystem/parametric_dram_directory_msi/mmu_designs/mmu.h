@@ -31,6 +31,8 @@ namespace ParametricDramDirectoryMSI
 		std::ofstream log_file;
 		std::string log_file_name;
 
+		bool m_site_enabled; // SITE: Self-Invalidating TLB Entries
+
 		struct
 		{
 			UInt64 num_translations;
@@ -47,6 +49,10 @@ namespace ParametricDramDirectoryMSI
 			UInt64 tlb_flush;
 
 			SubsecondTime page_migration_wait_time;
+
+			// SITE stats
+			UInt64 site_expired_misses;
+			UInt64 site_lease_extensions;
 
 		} translation_stats;
 		

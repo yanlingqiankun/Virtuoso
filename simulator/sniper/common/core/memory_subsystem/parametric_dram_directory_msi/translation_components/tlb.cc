@@ -16,6 +16,10 @@
 #include "fault_injection.h"
 #include "memory_manager.h"
 #include "site_clock.h"
+#include "simulator.h"
+#include "mimicos.h"
+#include "pagetable_radix.h"
+#include "thread.h"
 
 // #define DEBUG_TLB
 // #define TLB_STATS
@@ -118,6 +122,9 @@ namespace ParametricDramDirectoryMSI
                         tlb_stats.m_miss++;
                         tlb_stats.m_site_expired_miss++;
                     }
+                    // Record the expired miss globally (for global lease adjustment)
+                    SiteLogicalClock::getInstance()->recordMiss();
+
                     if (out_site_expired)
                         *out_site_expired = true;
                     return NULL; // Expired entry → TLB miss
@@ -134,7 +141,7 @@ namespace ParametricDramDirectoryMSI
         return NULL;
     }
 
-    std::tuple<bool, IntPtr, IntPtr, int> TLB::allocate(IntPtr address, SubsecondTime now, bool count, Core::lock_signal_t lock_signal, int page_size, IntPtr ppn, bool self_alloc, UInt32 expiration_time)
+    std::tuple<bool, IntPtr, IntPtr, int> TLB::allocate(IntPtr address, SubsecondTime now, bool count, Core::lock_signal_t lock_signal, int page_size, IntPtr ppn, bool self_alloc)
     {
         if (getPrefetch() && !self_alloc)
         {
@@ -155,13 +162,31 @@ namespace ParametricDramDirectoryMSI
         bool eviction = false;
         m_cache.insertSingleLineTLB(address, NULL, &eviction, &evict_addr, &evict_block_info, NULL, now, NULL, CacheBlockInfo::block_type_t::NON_PAGE_TABLE, page_size, ppn);
 
-        // SITE: Set expiration time on the newly inserted entry
-        if (m_site_enabled && expiration_time > 0)
+        // SITE: Query ETT for this VPN's expiration time and set it on the newly inserted entry
+        if (m_site_enabled)
         {
-            CacheBlockInfo *inserted = m_cache.accessSingleLineTLB(address, Cache::LOAD, NULL, 0, now, false);
-            if (inserted)
+            UInt32 ett_expiration = 0;
+            Core* core = Sim()->getCoreManager()->getCoreFromID(m_core_id);
+            if (core && core->getThread())
             {
-                inserted->setExpirationTime(expiration_time);
+                int app_id = core->getThread()->getAppId();
+                PageTable* pt = Sim()->getMimicOS()->getPageTable(app_id);
+                PageTableRadix* radix_pt = dynamic_cast<PageTableRadix*>(pt);
+                if (radix_pt)
+                {
+                    IntPtr vpn = address >> page_size;
+                    PageTableRadix::SiteETTEntry& ett = radix_pt->getSiteETTEntry(vpn);
+                    ett_expiration = ett.expiration_time;
+                }
+            }
+
+            if (ett_expiration > 0)
+            {
+                CacheBlockInfo *inserted = m_cache.accessSingleLineTLB(address, Cache::LOAD, NULL, 0, now, false);
+                if (inserted)
+                {
+                    inserted->setExpirationTime(ett_expiration);
+                }
             }
         }
         

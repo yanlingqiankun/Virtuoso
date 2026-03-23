@@ -66,6 +66,7 @@ private:
     bool m_site_enabled;
     bool m_nomad_enabled;
     UInt64 m_nomad_copy_latency_us;
+    std::vector<SubsecondTime> m_dma_copy_latencies; // Indexed by page count (1-based)
 
     std::atomic<uint32_t> m_rr_issuer_counter{0}; // Round-robin counter for TLB shootdown issuer selection
 

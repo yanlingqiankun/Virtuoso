@@ -14,6 +14,7 @@
 #include "hemem_allocator.h"
 #include "site_clock.h"
 #include "pagetable_radix.h"
+#include "barrier_sync_server.h"
 
 using namespace std;
 
@@ -132,6 +133,17 @@ MimicOS::MimicOS(bool _is_guest) : m_page_fault_latency(NULL, 0), tlb_flush_late
     if (m_nomad_enabled) {
         std::cout << "[MimicOS] NOMAD TPM enabled (copy_latency=" << m_nomad_copy_latency_us << "us)" << std::endl;
     }
+
+    // Parse shootdown_latency array: DMA copy latency per page count (ns, 1-based index)
+    m_dma_copy_latencies.clear();
+    m_dma_copy_latencies.push_back(SubsecondTime::Zero()); // index 0 unused (1-based)
+    if (Sim()->getCfg()->hasKey("migration/shootdown_latency")) {
+        for (int i = 0; Sim()->getCfg()->hasKey("migration/shootdown_latency", i); i++) {
+            UInt64 latency_ns = Sim()->getCfg()->getIntArray("migration/shootdown_latency", i);
+            m_dma_copy_latencies.push_back(SubsecondTime::NS(latency_ns));
+        }
+        std::cout << "[MimicOS] DMA copy latencies loaded: " << (m_dma_copy_latencies.size() - 1) << " entries" << std::endl;
+    }
 }
 
 MimicOS::~MimicOS()
@@ -177,7 +189,7 @@ core_id_t MimicOS::flushTLB(int app_id, array<IntPtr, TLB_SHOOT_DOWN_MAX_SIZE> p
                 IntPtr vpn = page_batch[i] >> 12;
                 ParametricDramDirectoryMSI::PageTableRadix::SiteETTEntry& ett = radix_pt->getSiteETTEntry(vpn);
 
-                if (ett.max_expiration_time > 0 && current_time >= ett.max_expiration_time)
+                if (ett.expiration_time > 0 && current_time >= ett.expiration_time)
                 {
                     // Entry already expired — no need to shootdown for this page
                     migration_stats.site_shootdowns_avoided++;
@@ -187,38 +199,77 @@ core_id_t MimicOS::flushTLB(int app_id, array<IntPtr, TLB_SHOOT_DOWN_MAX_SIZE> p
                     // Entry NOT expired — must still do shootdown
                     all_expired = false;
                     migration_stats.site_shootdowns_performed++;
-
-                    // Shrink the lease for this page (penalty for requiring shootdown)
-                    const UInt32 MIN_LEASE = 50;
-                    ett.current_lease = std::max(ett.current_lease / 2, MIN_LEASE);
                 }
+
+                // Clear ETT entry for pages being migrated
+                radix_pt->clearSiteETTEntry(vpn);
+            }
+
+            // Shrink global lease once per batch (not per page) if shootdown was needed
+            if (!all_expired)
+            {
+                SiteLogicalClock::getInstance()->shrinkLease();
             }
 
             if (all_expired)
             {
                 // All entries expired — skip the entire shootdown!
-                return 0; // Return 0 as no core issued shootdown
+                //
+                // However, some cores may be stuck in the barrier with
+                // pending TLB shootdown requests from *previous* batches
+                // that were enqueued when the core was not yet in the
+                // barrier (so the original signalForShootdown was a no-op).
+                // If we don't signal them now, those cores will never wake
+                // up to process the stale requests, and any core spinning
+                // in performPTW on a PF_MOVING page (waiting for the
+                // issuer core to call DMA_migrate) will deadlock the
+                // barrier.
+                //
+                // Signal every barrier-waiting core that has a pending
+                // shootdown so it gets a chance to drain its buffer.
+                BarrierSyncServer* barrier =
+                    dynamic_cast<BarrierSyncServer*>(Sim()->getClockSkewMinimizationServer());
+                if (barrier)
+                {
+                    UInt32 num_cores = Sim()->getConfig()->getTotalCores();
+                    for (UInt32 c = 0; c < num_cores; c++)
+                    {
+                        Core* core = core_manager->getCoreFromID(c);
+                        if (core && core->hasPendingTLBShootdown())
+                        {
+                            barrier->signalForShootdown(c);
+                        }
+                    }
+                }
+
+                return SITE_SHOOTDOWN_SKIPPED;
             }
         }
     }
 
     // Round-robin selection of an ACTIVE core to issue the TLB shootdown.
-    // IDLE cores (whose TraceThread has exited) cannot process shootdown
-    // requests, so enqueueing on them would cause PTEs to stay in MOVING
-    // state forever, leading to a deadlock.
-    // Linear probe from the round-robin position to find an ACTIVE core.
-    core_id_t start_core_id = m_rr_issuer_counter.fetch_add(1, std::memory_order_relaxed) % total_cores;
-    core_id_t issuer_core_id = start_core_id;
+    // m_rr_issuer_counter advances lazily: when the selected core is found to
+    // be IDLE, we bump the counter forward until we land on an active one.
+    // Subsequent calls start from the updated position, so no per-call scan.
     Core* issuer_core = nullptr;
+    core_id_t issuer_core_id = 0;
     bool found = false;
 
     for (UInt32 i = 0; i < total_cores; i++) {
-        issuer_core = core_manager->getCoreFromID(issuer_core_id);
-        if (issuer_core && issuer_core->getState() != Core::IDLE && issuer_core->getThread() != nullptr) {
+        // Atomically read the current candidate without incrementing yet
+        uint32_t candidate = m_rr_issuer_counter.load(std::memory_order_relaxed) % total_cores;
+        Core* c = core_manager->getCoreFromID(candidate);
+
+        if (c && c->getState() != Core::IDLE && c->getThread() != nullptr) {
+            // Active core found — now claim it with a fetch_add
+            issuer_core_id = m_rr_issuer_counter.fetch_add(1, std::memory_order_relaxed) % total_cores;
+            issuer_core = core_manager->getCoreFromID(issuer_core_id);
             found = true;
             break;
         }
-        issuer_core_id = (issuer_core_id + 1) % total_cores;
+
+        // Core is IDLE: skip it by advancing the shared counter
+        m_rr_issuer_counter.fetch_add(1, std::memory_order_relaxed);
     }
 
     if (!found) {
@@ -393,6 +444,23 @@ bool MimicOS::move_pages(std::queue<Hemem::hemem_page*> src_pages_queue,
                 allocator->deallocate(dst_page_batch, !current_migrate_up_batch, 0); // Return to the *source* tier's free list
             }
 
+            // If SITE skipped the shootdown, DMA_migrate() was never triggered via
+            // the normal ACK path.  Call it here — after the copy — so the PTE is
+            // updated from MOVING → READ_WRITE only once the new physical frame is ready.
+            // The migration thread has no associated core, so we use the
+            // barrier's global time as the DMA base.  DMA_migrate() will
+            // then add the per-batch copy latency (looked up from
+            // m_dma_copy_latencies by page count), matching the timing
+            // behaviour of the normal shootdown-ACK path in core.cc.
+            if (issuer_core_id == SITE_SHOOTDOWN_SKIPPED) {
+                SubsecondTime dma_base_time = SubsecondTime::Zero();
+                BarrierSyncServer* barrier =
+                    dynamic_cast<BarrierSyncServer*>(Sim()->getClockSkewMinimizationServer());
+                if (barrier) {
+                    dma_base_time = barrier->getGlobalTime();
+                }
+                DMA_migrate(batch_key, dma_base_time, app_id);
+            }
 
             // --- Reset counter for the next batch ---
             batch_count = 0;
@@ -496,25 +564,30 @@ void MimicOS::DMA_migrate(IntPtr move_id, subsecond_time_t finish_time, int app_
     const auto& vaddrs_array = it->second.first;
     const auto& new_phy_addrs_array = it->second.second;
 
-    // 5. Iterate over all pages in the batch
+    // 5. Count valid pages in this batch
+    int valid_pages = 0;
     for (int i = 0; i < TLB_SHOOT_DOWN_SIZE; ++i) {
+        if (vaddrs_array[i] == 0) break;
+        valid_pages++;
+    }
 
+    // 6. Compute finish_time using measured DMA copy latency table
+    if (finish_time > SubsecondTime::Zero() && valid_pages > 0 && !m_dma_copy_latencies.empty()) {
+        int idx = std::min(valid_pages, (int)m_dma_copy_latencies.size() - 1);
+        finish_time = finish_time + m_dma_copy_latencies[idx];
+    }
+
+    // 7. Iterate over all pages in the batch
+    for (int i = 0; i < valid_pages; ++i) {
         IntPtr vaddr = vaddrs_array[i];
-
-        // If vaddr is 0, it's a padding entry, so the batch is done
-        if (vaddr == 0) {
-            break;
-        }
-
-        // Get the corresponding new physical address
         IntPtr new_paddr = new_phy_addrs_array[i];
 
-        // 6. Update the Page Table (PTE), pointing the vaddr to the new_paddr
+        // Update the Page Table (PTE), pointing the vaddr to the new_paddr
         migration_stats.dma_migrations_completed++;
         pt->DMA_move_page(vaddr, new_paddr, finish_time);
     }
 
-    // 7. Processing is complete, remove this entry from the map
+    // 8. Processing is complete, remove this entry from the map
     DMA_map.erase(it);
 }
 

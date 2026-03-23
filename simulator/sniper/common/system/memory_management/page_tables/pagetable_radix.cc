@@ -3,6 +3,7 @@
 #include "simulator.h"
 #include "physical_memory_allocator.h"
 #include "mimicos.h"
+#include "site_clock.h"
 
 // #define DEBUG
 // #define SAMPLE_DEBUG
@@ -329,6 +330,16 @@ namespace ParametricDramDirectoryMSI
 					current_frame->entries[offset].data.translation.valid = true;
 					current_frame->entries[offset].data.translation.ppn = ppn;
 					current_frame->entries[offset].is_pte = true;
+
+					// SITE: Set expiration time at page allocation
+					{
+						SiteLogicalClock* clk = SiteLogicalClock::getInstance();
+						UInt32 cur_time = clk->getGlobalTime();
+						UInt32 exp_time = cur_time + clk->getCurrentLease();
+						IntPtr vpn = address >> page_size;
+						setSiteExpiration(vpn, exp_time);
+					}
+
 					break;
 				}
 				else if (page_size == 12 && level == 1)
@@ -339,6 +350,16 @@ namespace ParametricDramDirectoryMSI
 #endif
 					current_frame->entries[offset].data.translation.valid = true;
 					current_frame->entries[offset].data.translation.ppn = ppn;
+
+					// SITE: Set expiration time at page allocation
+					{
+						SiteLogicalClock* clk = SiteLogicalClock::getInstance();
+						UInt32 cur_time = clk->getGlobalTime();
+						UInt32 exp_time = cur_time + clk->getCurrentLease();
+						IntPtr vpn = address >> page_size;
+						setSiteExpiration(vpn, exp_time);
+					}
+
 					break;
 				}
 
@@ -379,6 +400,14 @@ namespace ParametricDramDirectoryMSI
 #endif
 				current_frame->entries[offset].data.translation.valid = false;
 				current_frame->entries[offset].data.translation.ppn = -1;
+
+				// SITE: Clear ETT entry when page is freed/invalidated
+				{
+					int page_size_bits = m_page_size_list[level - 1];
+					IntPtr vpn = address >> page_size_bits;
+					clearSiteETTEntry(vpn);
+				}
+
 				break;
 			}
 			else

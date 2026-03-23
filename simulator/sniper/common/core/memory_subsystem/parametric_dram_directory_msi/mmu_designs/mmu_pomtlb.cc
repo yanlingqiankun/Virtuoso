@@ -669,69 +669,6 @@ namespace ParametricDramDirectoryMSI
 		else
 			tlbs = tlb_subsystem->getDataPath();
 
-		// ===== SITE: Compute expiration_time to pass to TLB allocate =====
-		UInt32 site_expiration_time = 0; // 0 means "no SITE" or "infinite lease"
-		if (m_site_enabled && !tlb_hit && !software_tlb_hit)
-		{
-			int app_id = core->getThread()->getAppId();
-			PageTable* pt = Sim()->getMimicOS()->getPageTable(app_id);
-			PageTableRadix* radix_pt = dynamic_cast<PageTableRadix*>(pt);
-			if (radix_pt)
-			{
-				IntPtr vpn = address >> page_size_result;
-				PageTableRadix::SiteETTEntry& ett = radix_pt->getSiteETTEntry(vpn);
-
-				UInt32 current_time = SiteLogicalClock::getInstance()->getCoreLocalTime(core->getId());
-				bool is_expired_miss = (ett.max_expiration_time > 0 && current_time >= ett.max_expiration_time);
-
-				// Algorithm A: Lease extension logic
-				const int MISS_THRESHOLD = 3;
-				const UInt32 MAX_LEASE = 100000;
-				const UInt32 MIN_LEASE = 50;
-
-				if (is_expired_miss)
-				{
-					// This was an expired miss — the entry existed but had expired
-					ett.miss_counter++;
-					ett.last_ptw_ts_miss = current_time;
-
-					if (count)
-						translation_stats.site_expired_misses++;
-
-					// If frequent expirations, extend the lease
-					if (ett.miss_counter > MISS_THRESHOLD)
-					{
-						ett.current_lease = std::min(ett.current_lease * 2, MAX_LEASE);
-						ett.miss_counter = 0;
-						if (count)
-							translation_stats.site_lease_extensions++;
-					}
-				}
-				else
-				{
-					// Cold miss (first time or capacity miss) — reset miss counter
-					ett.miss_counter = 0;
-				}
-
-				// Enforce minimum lease
-				if (ett.current_lease < MIN_LEASE)
-					ett.current_lease = MIN_LEASE;
-
-				// Compute new expiration
-				site_expiration_time = current_time + ett.current_lease;
-				ett.max_expiration_time = site_expiration_time;
-				ett.last_ptw_ts = current_time;
-
-#ifdef DEBUG_MMU
-				log_file << "[SITE] VPN: 0x" << std::hex << vpn
-				         << " lease=" << std::dec << ett.current_lease
-				         << " expiration=" << site_expiration_time
-				         << " is_expired_miss=" << is_expired_miss
-				         << std::endl;
-#endif
-			}
-		}
-
 		std::map<int, vector<tuple<IntPtr,IntPtr,int>>> evicted_translations;
 
 		int tlb_levels = tlbs.size();
@@ -775,7 +712,7 @@ namespace ParametricDramDirectoryMSI
 #endif
 
 							// SITE: pass expiration_time for evicted entries too
-							auto result = tlbs[i][j]->allocate(get<0>(evicted_translations[i - 1][k]), time, count, lock, get<2>(evicted_translations[i - 1][k]), get<1>(evicted_translations[i - 1][k]), false, site_expiration_time);
+							auto result = tlbs[i][j]->allocate(get<0>(evicted_translations[i - 1][k]), time, count, lock, get<2>(evicted_translations[i - 1][k]), get<1>(evicted_translations[i - 1][k]));
 
 							// If the allocation was successful and we have an evicted translation, 
 							// we need to add it to the evicted translations vector for
@@ -802,7 +739,7 @@ namespace ParametricDramDirectoryMSI
 #endif
 
 					// SITE: pass expiration_time
-					auto result = tlbs[i][j]->allocate(address, time, count, lock, page_size_result, ppn_result, false, site_expiration_time);
+					auto result = tlbs[i][j]->allocate(address, time, count, lock, page_size_result, ppn_result);
 					if (get<0>(result) == true)
 					{
 						evicted_translations[i].push_back(make_tuple(get<1>(result), get<2>(result), get<3>(result)));
@@ -831,7 +768,7 @@ namespace ParametricDramDirectoryMSI
 					         << " with PPN: " << ppn_result << std::endl;
 #endif
 					// SITE: pass expiration_time to software TLB allocate
-					pom->allocate(address, time, count, lock, page_size_result, ppn_result, false, site_expiration_time);
+					pom->allocate(address, time, count, lock, page_size_result, ppn_result);
 				}
 			}
 		}

@@ -20,6 +20,7 @@ class BarrierSyncServer : public ClockSkewMinimizationServer
       std::vector<core_id_t> m_to_release;
       std::vector<core_id_t> m_core_group;
       std::vector<thread_id_t> m_core_thread;
+      std::vector<bool> m_barrier_released;   // Per-core flag: true when barrier has released this core
       SubsecondTime m_global_time;
       bool m_fastforward;
       volatile bool m_disable;
@@ -60,6 +61,10 @@ class BarrierSyncServer : public ClockSkewMinimizationServer
       SubsecondTime getBarrierInterval() const { return m_barrier_interval; }
 
       void printState(void);
+
+      // Wake up a core waiting in the barrier to process a TLB shootdown request.
+      // Called from Core::enqueueTLBShootdownRequest() by background migration threads.
+      void signalForShootdown(core_id_t core_id);
 };
 
 #endif /* __BARRIER_SYNC_SERVER_H__ */

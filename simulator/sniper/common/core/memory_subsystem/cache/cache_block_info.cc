@@ -78,6 +78,7 @@ void CacheBlockInfo::clone(CacheBlockInfo *cache_block_info)
    m_reuse = cache_block_info->getReuse();
    m_page_size = cache_block_info->getPageSize();
    ppn = cache_block_info->getPPN();
+   m_expiration_time = cache_block_info->getExpirationTime(); // SITE: propagate expiration on L1->L2 eviction
 
 }
 

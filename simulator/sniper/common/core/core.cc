@@ -24,6 +24,7 @@
 #include "pthread_emu.h"
 #include "thread.h"
 #include "thread_manager.h"
+#include "barrier_sync_server.h"
 // #define TLB_SHOOTDOWN_DEBUG
 
 #if 0
@@ -661,6 +662,15 @@ void Core::networkHandleTLBShootdownRequest(PrL1PrL2DramDirectoryMSI::ShmemMsg *
 
     auto* payload = reinterpret_cast<TLBShootdownRequestPayload *>(shmem_msg->getDataBuf());
 
+   SubsecondTime msg_time = getShmemPerfModel()->getElapsedTime(ShmemPerfModel::_SIM_THREAD);
+   SubsecondTime user_time_before = getPerformanceModel()->getElapsedTime();
+   // getShmemPerfModel()->updateElapsedTime(msg_time, ShmemPerfModel::_USER_THREAD);
+   // If the receiver's time was pushed forward by the sender's message arrival time,
+   // account for that forced advance as migration idle time so it shows up in
+   // cpiSyncTLBShootdown and idle_elapsed_time.
+   if (msg_time > user_time_before)
+      getPerformanceModel()->incrementTLBShootdownIdleTime(msg_time - user_time_before);
+
     // Push-based fast path: if this core is IDLE (thread has exited), its TLB
     // entries are irrelevant.  Send an immediate ACK from the SIM thread instead
     // of enqueueing — the user thread no longer exists to drain the buffer.
@@ -682,9 +692,6 @@ void Core::networkHandleTLBShootdownRequest(PrL1PrL2DramDirectoryMSI::ShmemMsg *
         );
         return;
     }
-
-    SubsecondTime msg_time = getShmemPerfModel()->getElapsedTime(ShmemPerfModel::_SIM_THREAD);
-    getShmemPerfModel()->updateElapsedTime(msg_time, ShmemPerfModel::_USER_THREAD);
 
     enqueueTLBShootdownRequest(
        payload->addrs,
@@ -723,7 +730,11 @@ void Core::networkHandleTLBShootdownAck(PrL1PrL2DramDirectoryMSI::ShmemMsg *shme
          ScopedLock sl(m_pending_shootdowns_lock);
 
          // 1. Synchronize time
-         getShmemPerfModel()->updateElapsedTime(msg_time, ShmemPerfModel::_USER_THREAD);
+         {
+            SubsecondTime user_time_before = getPerformanceModel()->getElapsedTime();
+            if (msg_time > user_time_before)
+               getPerformanceModel()->incrementTLBShootdownIdleTime(msg_time - user_time_before);
+         }
 
          auto it = m_pending_shootdowns.find(request_id);
          if (it != m_pending_shootdowns.end()) {
@@ -779,6 +790,14 @@ void Core::enqueueTLBShootdownRequest(std::array<IntPtr, TLB_SHOOT_DOWN_MAX_SIZE
        if (Sim()->getThreadManager()->getThreadState(tid) == Core::STALLED) {
           thread->signalIPI();
        }
+    }
+
+    // If the target core is waiting in the barrier, wake it up to process
+    // the TLB shootdown.  It will go back to sleep after handling it.
+    BarrierSyncServer* barrier =
+        dynamic_cast<BarrierSyncServer*>(Sim()->getClockSkewMinimizationServer());
+    if (barrier) {
+       barrier->signalForShootdown(m_core_id);
     }
 }
 
@@ -854,8 +873,10 @@ void Core::handleRemoteTLBShootdownRequest(TLBShootdownRequest &request)
 
       // 1b. Stall this core for the TLB-flush handling cost.
       // Classified as migration idle so it appears in "Idle time" in sim.out
-      // and in per-core cpiSyncMigration for fine-grained analysis.
-      getPerformanceModel()->incrementMigrationIdleTime(ipi_handle_latency);
+      // and in per-core cpiSyncTLBShootdown for fine-grained analysis.
+      getPerformanceModel()->incrementTLBShootdownIdleTime(ipi_handle_latency);
+         getShmemPerfModel()->setElapsedTime(ShmemPerfModel::_SIM_THREAD, getPerformanceModel()->getElapsedTime());
+
 
    } // m_mem_lock release
 
@@ -875,7 +896,7 @@ void Core::handleRemoteTLBShootdownRequest(TLBShootdownRequest &request)
        request.id,
        reinterpret_cast<Byte *>(&ack_payload), sizeof(ack_payload),
        HitWhere::UNKNOWN, m_shmem_perf,
-       ShmemPerfModel::_USER_THREAD, // send in _USER_THREAD
+       ShmemPerfModel::_SIM_THREAD, // send in _USER_THREAD
        CacheBlockInfo::block_type_t::TLB_ENTRY
    );
 }
@@ -922,8 +943,9 @@ void Core::initiateTLBShootdownBroadcast(TLBShootdownRequest &request)
            ScopedLock sl(m_pending_shootdowns_lock);
            // Stall the issuer core for the IPI-initiate overhead.
            // Classified as migration idle so it appears in "Idle time" in sim.out
-           // and in per-core cpiSyncMigration for fine-grained analysis.
-           getPerformanceModel()->incrementMigrationIdleTime(ipi_initiate_latency);
+           // and in per-core cpiSyncTLBShootdown for fine-grained analysis.
+           getPerformanceModel()->incrementTLBShootdownIdleTime(ipi_initiate_latency);
+          getShmemPerfModel()->setElapsedTime(ShmemPerfModel::_SIM_THREAD, getPerformanceModel()->getElapsedTime());
 
            PendingShootdown pending;
            pending.max_end_time = getPerformanceModel()->getElapsedTime();
@@ -967,7 +989,7 @@ void Core::initiateTLBShootdownBroadcast(TLBShootdownRequest &request)
             request.id,             // Address (request id)
             reinterpret_cast<Byte *>(&payload), sizeof(payload),
             m_shmem_perf,
-            ShmemPerfModel::_USER_THREAD);
+            ShmemPerfModel::_SIM_THREAD);
       }
 
        // 4. Perform local TLB flush
@@ -977,8 +999,8 @@ void Core::initiateTLBShootdownBroadcast(TLBShootdownRequest &request)
        }
        // Account for issuer core's own TLB flush cost.
        // Classified as migration idle so it appears in "Idle time" in sim.out
-       // and in per-core cpiSyncMigration for fine-grained analysis.
-       getPerformanceModel()->incrementMigrationIdleTime(ipi_handle_latency);
+       // and in per-core cpiSyncTLBShootdown for fine-grained analysis.
+       getPerformanceModel()->incrementTLBShootdownIdleTime(ipi_handle_latency);
 #ifdef TLB_SHOOTDOWN_DEBUG
       cout << "core "<< getId() << " waiting reply for request = 0x" << request.addrs.at(0) << endl;
 #endif
@@ -1025,6 +1047,6 @@ void Core::initiateTLBShootdownBroadcast(TLBShootdownRequest &request)
        m_tlb_shootdown_total_time += shootdown_duration;
        m_tlb_shootdown_count++;
 
-      Sim()->getMimicOS()->DMA_migrate(request.id, getShmemPerfModel()->getElapsedTime(ShmemPerfModel::_USER_THREAD), request.app_id);
+      Sim()->getMimicOS()->DMA_migrate(request.id, getPerformanceModel()->getElapsedTime(), request.app_id);
 
 }

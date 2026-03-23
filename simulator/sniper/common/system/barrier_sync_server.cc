@@ -16,7 +16,7 @@
 #include <algorithm>
 
 BarrierSyncServer::BarrierSyncServer()
-    : m_local_clock_list(Sim()->getConfig()->getApplicationCores(), SubsecondTime::Zero()), m_barrier_acquire_list(Sim()->getConfig()->getApplicationCores(), false), m_core_cond(Sim()->getConfig()->getApplicationCores(), NULL), m_core_group(Sim()->getConfig()->getApplicationCores(), INVALID_CORE_ID), m_core_thread(Sim()->getConfig()->getApplicationCores(), INVALID_THREAD_ID), m_global_time(SubsecondTime::Zero()), m_fastforward(false), m_disable(false)
+    : m_local_clock_list(Sim()->getConfig()->getApplicationCores(), SubsecondTime::Zero()), m_barrier_acquire_list(Sim()->getConfig()->getApplicationCores(), false), m_core_cond(Sim()->getConfig()->getApplicationCores(), NULL), m_core_group(Sim()->getConfig()->getApplicationCores(), INVALID_CORE_ID), m_core_thread(Sim()->getConfig()->getApplicationCores(), INVALID_THREAD_ID), m_barrier_released(Sim()->getConfig()->getApplicationCores(), false), m_global_time(SubsecondTime::Zero()), m_fastforward(false), m_disable(false)
 {
    try
    {
@@ -80,9 +80,6 @@ void BarrierSyncServer::synchronize(core_id_t core_id, SubsecondTime time)
       return;
    }
 
-   // One thread entered the barrier, another one can resume
-   doRelease(1);
-
    master_core->getPerformanceModel()->barrierEnter();
 
    m_local_clock_list[master_core_id] = time;
@@ -95,12 +92,37 @@ void BarrierSyncServer::synchronize(core_id_t core_id, SubsecondTime time)
 
    if (mustWait)
    {
+      // Interruptible barrier wait: loop so we can wake up to handle TLB shootdown
+      // requests from background migration threads, then go back to sleep.
+      m_barrier_released[master_core_id] = false;
 
-      //  std::cout << "Core " << core_id << " must wait with local_clock " << time << " and next_barrier_time " << m_next_barrier_time << std::endl;
-      m_core_cond[master_core_id]->wait(Sim()->getThreadManager()->getLock(), 1);
-      // std::cout << "Core " << core_id << " is released" << std::endl;
+      while (!m_barrier_released[master_core_id])
+      {
+         m_core_cond[master_core_id]->wait(Sim()->getThreadManager()->getLock());
+
+         if (m_barrier_released[master_core_id])
+            break;
+
+         // Woken up for a TLB shootdown: process it and go back to sleep.
+         if (master_core->hasPendingTLBShootdown())
+         {
+            // Temporarily release the global lock to process TLB shootdown
+            Sim()->getThreadManager()->getLock().release();
+            master_core->processTLBShootdownBuffer(false);
+            Sim()->getThreadManager()->getLock().acquire();
+         }
+
+         // Woken up because a thread exited/stalled and the barrier may now be
+         // reachable (releaseThread() signalled us).  Re-evaluate and fire if so.
+         if (!m_barrier_released[master_core_id] && isBarrierReached())
+         {
+            mustWait = barrierRelease(thread_me);
+            if (!mustWait)
+               break;
+         }
+      }
+
       m_barrier_acquire_list[master_core_id] = false;
-      // printState();
    }
    else
       master_core->getPerformanceModel()->barrierExit();
@@ -145,8 +167,26 @@ void BarrierSyncServer::releaseThread(thread_id_t thread_id)
          m_local_clock_list[core_id] = SubsecondTime::Zero();
       }
    }
-   // One thread stopped running, release another one now
+   // m_to_release is always empty between two barrierRelease() calls (doRelease(-1) drains it
+   // completely), so this is a no-op in practice.  It is kept here as a safety net in case
+   // the throttling policy ever changes, and to preserve the original intent of the function.
    doRelease(1);
+
+   // A thread just stopped running.  If all remaining active cores have already reached the
+   // barrier, nobody will call synchronize() again to trigger barrierRelease().  Wake up every
+   // core that is currently waiting in the barrier so that one of them re-evaluates
+   // isBarrierReached() and fires barrierRelease() if appropriate.
+   // We must NOT call signal() / barrierRelease() directly here because we are inside a
+   // HOOK_THREAD_EXIT or HOOK_THREAD_STALL callback while m_thread_lock is held, and
+   // barrierRelease() calls HOOK_PERIODIC which may try to acquire m_thread_lock → deadlock.
+   if (isBarrierReached())
+   {
+      for (core_id_t core_id = 0; core_id < (core_id_t)Sim()->getConfig()->getApplicationCores(); core_id++)
+      {
+         if (m_barrier_acquire_list[core_id])
+            m_core_cond[core_id]->signal();
+      }
+   }
 }
 
 void BarrierSyncServer::signal()
@@ -267,6 +307,17 @@ bool BarrierSyncServer::barrierRelease(thread_id_t caller_id, bool continue_unti
       CLOG("barrier", "Barrier %" PRId64 "ns", m_next_barrier_time.getNS());
       Sim()->getHooksManager()->callHooks(HookType::HOOK_PERIODIC, static_cast<subsecond_time_t>(m_next_barrier_time).m_time);
 
+      // // Checkpoint: print each core's elapsed time and instruction count
+      // printf("[Checkpoint] BarrierTime: %" PRId64 " ns\n", m_next_barrier_time.getNS());
+      // for (core_id_t i = 0; i < (core_id_t)Sim()->getConfig()->getApplicationCores(); i++)
+      // {
+      //    Core *c = Sim()->getCoreManager()->getCoreFromID(i);
+      //    SubsecondTime elapsed = c->getPerformanceModel()->getElapsedTime();
+      //    UInt64 insn_count = c->getInstructionCount();
+      //    printf("  Core %d: elapsed = %" PRId64 " ns, instructions = %" PRIu64 "\n", i, elapsed.getNS(), insn_count);
+      // }
+      // fflush(stdout);
+
       if (continue_until_release)
       {
          // If HOOK_PERIODIC woke someone up, this thread can safely go to sleep
@@ -302,6 +353,7 @@ bool BarrierSyncServer::barrierRelease(thread_id_t caller_id, bool continue_unti
                {
                   Core *core = Sim()->getCoreManager()->getCoreFromID(core_id);
                   core->getPerformanceModel()->barrierExit();
+                  m_barrier_released[core_id] = true;
                   m_to_release.push_back(core_id);
                }
             }
@@ -309,11 +361,9 @@ bool BarrierSyncServer::barrierRelease(thread_id_t caller_id, bool continue_unti
       }
    }
 
-   // To avoid overwhelming the OS scheduler, we only release N threads at a time (N ~= host cores).
-   // Once a thread is done (stops executing because it completed the next barrier quantum, or due to thread stall),
-   // one more thread is released so we always have at most N running threads.
-   std::random_shuffle(m_to_release.begin(), m_to_release.end());
-   doRelease(m_fastforward ? -1 : Sim()->getConfig()->getNumHostCores());
+   // Strict barrier: release all waiting threads at once to ensure
+   // global time alignment. No throttling — every core resumes simultaneously.
+   doRelease(-1);
 
    return must_wait;
 }
@@ -339,6 +389,7 @@ void BarrierSyncServer::abortBarrier()
       if (m_barrier_acquire_list[core_id] == true)
       {
          m_barrier_acquire_list[core_id] = false;
+         m_barrier_released[core_id] = true;
 
          Core *core = Sim()->getCoreManager()->getCoreFromID(core_id);
          core->getPerformanceModel()->barrierExit();
@@ -393,4 +444,18 @@ void BarrierSyncServer::printState(void)
          printf(" _");
    }
    printf("\n");
+}
+
+void BarrierSyncServer::signalForShootdown(core_id_t core_id)
+{
+   // If this core is waiting in the barrier, wake it up so it can
+   // process the pending TLB shootdown request.  The interruptible
+   // wait loop in synchronize() will check m_barrier_released and
+   // go back to sleep after handling the shootdown.
+   core_id_t master_core_id = m_core_group[core_id] == INVALID_CORE_ID
+                              ? core_id : m_core_group[core_id];
+   if (m_barrier_acquire_list[master_core_id])
+   {
+      m_core_cond[master_core_id]->signal();
+   }
 }

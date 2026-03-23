@@ -1,6 +1,7 @@
 
 #pragma once
 #include "pagetable.h"
+#include "site_clock.h"
 #include <shared_mutex>
 #include <unordered_map>
 
@@ -85,20 +86,16 @@ namespace ParametricDramDirectoryMSI
 
 		// ===== SITE (Self-Invalidating TLB Entries) =====
 		/**
-		 * @brief ETT entry: stores per-page lease metadata for SITE.
-		 * 16 bytes per entry as specified in the SITE design doc.
+		 * @brief ETT entry: stores per-page expiration metadata for SITE.
+		 * The lease is now global (in SiteLogicalClock), so each ETT entry
+		 * only stores the expiration_time computed at page allocation.
 		 */
 		struct SiteETTEntry
 		{
-			UInt32 max_expiration_time;  // Latest expiration time distributed to TLBs
-			UInt32 current_lease;        // Current lease length
-			UInt32 last_ptw_ts_miss;     // Timestamp of last true miss
-			UInt32 last_ptw_ts;          // Timestamp of last page walk
-			int miss_counter;            // Consecutive expiration miss count
+			UInt32 expiration_time;  // Expiration time = allocate_time + global_lease
 
 			SiteETTEntry()
-				: max_expiration_time(0), current_lease(200),
-				  last_ptw_ts_miss(0), last_ptw_ts(0), miss_counter(0) {}
+				: expiration_time(0) {}
 		};
 
 		/**
@@ -111,6 +108,24 @@ namespace ParametricDramDirectoryMSI
 				site_ett[vpn] = SiteETTEntry();
 			}
 			return site_ett[vpn];
+		}
+
+		/**
+		 * @brief Set the SITE expiration time for a given VPN.
+		 * Called at page allocation time.
+		 */
+		void setSiteExpiration(IntPtr vpn, UInt32 expiration)
+		{
+			site_ett[vpn].expiration_time = expiration;
+		}
+
+		/**
+		 * @brief Clear the SITE ETT entry for a given VPN.
+		 * Called when the page is freed/invalidated.
+		 */
+		void clearSiteETTEntry(IntPtr vpn)
+		{
+			site_ett.erase(vpn);
 		}
 
 	private:

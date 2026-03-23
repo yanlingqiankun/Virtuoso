@@ -87,7 +87,7 @@ PerformanceModel::PerformanceModel(Core *core)
    registerStatsMetric("performance_model", core->getId(), "cpiSyncSyscall", &m_cpiSyncSyscall);
    registerStatsMetric("performance_model", core->getId(), "cpiSyncUnscheduled", &m_cpiSyncUnscheduled);
    registerStatsMetric("performance_model", core->getId(), "cpiSyncDvfsTransition", &m_cpiSyncDvfsTransition);
-   registerStatsMetric("performance_model", core->getId(), "cpiSyncMigration", &m_cpiSyncMigration);
+   registerStatsMetric("performance_model", core->getId(), "cpiSyncTLBShootdown", &m_cpiSyncTLBShootdown);
 
    registerStatsMetric("performance_model", core->getId(), "cpiRecv", &m_cpiRecv);
 }
@@ -351,11 +351,11 @@ void PerformanceModel::setElapsedTime(SubsecondTime time)
    incrementIdleElapsedTime(insn_cost);
 }
 
-// Called from core.cc when a core is stalled by a page-migration TLB shootdown.
+// Called from core.cc when a core is stalled by a TLB shootdown.
 // Advances idle time so the stall shows up in sim.out "Idle time" and in
-// per-core cpiSyncMigration for fine-grained analysis.
-void PerformanceModel::incrementMigrationIdleTime(SubsecondTime time)
+// per-core cpiSyncTLBShootdown for fine-grained analysis.
+void PerformanceModel::incrementTLBShootdownIdleTime(SubsecondTime time)
 {
-   m_cpiSyncMigration += time;    // Per-core migration CPI breakdown
+   m_cpiSyncTLBShootdown += time;  // Per-core TLB shootdown CPI breakdown
    incrementIdleElapsedTime(time); // Adds to idle_elapsed_time + total elapsed_time + notifies
 }

@@ -878,13 +878,29 @@ namespace ParametricDramDirectoryMSI
 
 		for (UInt32 i = 0; i < num_cache_lines; i++) {
 			IntPtr cache_line_addr = page_address + (i * m_cache_block_size);
-			m_cache_cntlrs[cache_level]->updateCacheBlock(
-				cache_line_addr,
-				CacheState::INVALID,
-				Transition::COHERENCY,
-				NULL,
-				ShmemPerfModel::_USER_THREAD
-			);
+
+			// Find the home directory node for this cache line
+			core_id_t home_node = m_tag_directory_home_lookup->getHome(cache_line_addr);
+
+			// Send NULLIFY_REQ to the directory controller.
+			// The directory will:
+			// 1. Look up all sharers of this cache line
+			// 2. Send INV_REQ (SHARED) or FLUSH_REQ (MODIFIED/EXCLUSIVE) to each sharer
+			// 3. Each sharer's LLC handles the message via handleMsgFromDramDirectory(),
+			//    which calls updateCacheBlock(INVALID) -- this recursively propagates
+			//    through m_prev_cache_cntlrs to invalidate L1-I and L1-D as well
+			// 4. Dirty data is written back to DRAM
+			// 5. Directory entry is updated to UNCACHED
+			sendMsg(PrL1PrL2DramDirectoryMSI::ShmemMsg::NULLIFY_REQ,
+					MemComponent::LAST_LEVEL_CACHE, MemComponent::TAG_DIR,
+					m_core_id_master,  /* requester */
+					home_node,         /* receiver (directory home node) */
+					cache_line_addr,
+					NULL, 0,
+					HitWhere::UNKNOWN,
+					&m_dummy_shmem_perf,
+					ShmemPerfModel::_USER_THREAD,
+					CacheBlockInfo::block_type_t::NON_PAGE_TABLE);
 		}
 	}
 

@@ -11,6 +11,7 @@
 #include "instruction.h"
 #include "core.h"
 #include "thread.h"
+#include "site_clock.h"
 #include <iostream>
 #include <fstream>
 #include <algorithm>
@@ -41,6 +42,46 @@ namespace ParametricDramDirectoryMSI
 		instantiatePageTableWalker(); // This instantiates the page table walker
 		instantiateTLBSubsystem(); // This instantiates the TLB hierarchy
 		registerMMUStats(); // This instantiates the MMU stats
+
+		// SITE: read config
+		if (Sim()->getCfg()->hasKey("site/enabled"))
+			m_site_enabled = Sim()->getCfg()->getBool("site/enabled");
+		else
+			m_site_enabled = false;
+
+		// SITE: read configurable lease parameters and initialize SiteLogicalClock
+		if (m_site_enabled)
+		{
+			UInt32 broadcast_interval = 100;
+			UInt32 initial_lease = 200;
+			int    miss_threshold = 3;
+			UInt32 max_lease = 100000;
+			UInt32 min_lease = 50;
+
+			if (Sim()->getCfg()->hasKey("site/broadcast_interval"))
+				broadcast_interval = Sim()->getCfg()->getInt("site/broadcast_interval");
+			if (Sim()->getCfg()->hasKey("site/initial_lease"))
+				initial_lease = Sim()->getCfg()->getInt("site/initial_lease");
+			if (Sim()->getCfg()->hasKey("site/miss_threshold"))
+				miss_threshold = Sim()->getCfg()->getInt("site/miss_threshold");
+			if (Sim()->getCfg()->hasKey("site/max_lease"))
+				max_lease = Sim()->getCfg()->getInt("site/max_lease");
+			if (Sim()->getCfg()->hasKey("site/min_lease"))
+				min_lease = Sim()->getCfg()->getInt("site/min_lease");
+
+			SiteLogicalClock::getInstance()->init(
+				Sim()->getConfig()->getTotalCores(),
+				broadcast_interval, initial_lease,
+				miss_threshold, max_lease, min_lease);
+
+			std::cout << "[SITE] Enabled with initial_lease=" << initial_lease
+			          << " miss_threshold=" << miss_threshold
+			          << " max_lease=" << max_lease
+			          << " min_lease=" << min_lease
+			          << " broadcast_interval=" << broadcast_interval
+			          << std::endl;
+		}
+
 		std::cout << std::endl;
 
 	}
@@ -117,6 +158,10 @@ namespace ParametricDramDirectoryMSI
 		registerStatsMetric(name, core->getId(), "total_translation_latency", &translation_stats.total_translation_latency);
 		registerStatsMetric(name, core->getId(), "total_fault_latency", &translation_stats.total_fault_latency);
 		registerStatsMetric(name, core->getId(), "page_migration_wait_time", &translation_stats.page_migration_wait_time);
+
+		// SITE stats
+		registerStatsMetric(name, core->getId(), "site_expired_misses", &translation_stats.site_expired_misses);
+		registerStatsMetric(name, core->getId(), "site_lease_extensions", &translation_stats.site_lease_extensions);
 
 
 		// This statistic can be used to compare it against the *.active counter which is exposed through performance counters in a real system
