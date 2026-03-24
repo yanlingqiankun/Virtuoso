@@ -175,7 +175,7 @@ namespace ParametricDramDirectoryMSI
                 if (radix_pt)
                 {
                     IntPtr vpn = address >> page_size;
-                    PageTableRadix::SiteETTEntry& ett = radix_pt->getSiteETTEntry(vpn);
+                    PageTableRadix::SiteETTEntry ett = radix_pt->getSiteETTEntry(vpn);
                     ett_expiration = ett.expiration_time;
                 }
             }

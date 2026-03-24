@@ -100,14 +100,30 @@ namespace ParametricDramDirectoryMSI
 
 		/**
 		 * @brief Get (or create with defaults) the SITE ETT entry for a given VPN.
+		 * Returns a copy to avoid dangling reference under concurrent access.
+		 * Uses shared_lock for read path, upgrades to unique_lock only on miss.
 		 */
-		SiteETTEntry& getSiteETTEntry(IntPtr vpn)
+		SiteETTEntry getSiteETTEntry(IntPtr vpn)
 		{
-			auto it = site_ett.find(vpn);
-			if (it == site_ett.end()) {
-				site_ett[vpn] = SiteETTEntry();
+			// Fast path: read-only lookup under shared lock
+			{
+				std::shared_lock<std::shared_mutex> rlock(site_ett_mutex);
+				auto it = site_ett.find(vpn);
+				if (it != site_ett.end()) {
+					return it->second;
+				}
 			}
-			return site_ett[vpn];
+			// Slow path: insert default entry under exclusive lock
+			{
+				std::unique_lock<std::shared_mutex> wlock(site_ett_mutex);
+				// Double-check after acquiring write lock
+				auto it = site_ett.find(vpn);
+				if (it != site_ett.end()) {
+					return it->second;
+				}
+				site_ett[vpn] = SiteETTEntry();
+				return site_ett[vpn];
+			}
 		}
 
 		/**
@@ -116,6 +132,7 @@ namespace ParametricDramDirectoryMSI
 		 */
 		void setSiteExpiration(IntPtr vpn, UInt32 expiration)
 		{
+			std::unique_lock<std::shared_mutex> wlock(site_ett_mutex);
 			site_ett[vpn].expiration_time = expiration;
 		}
 
@@ -125,10 +142,12 @@ namespace ParametricDramDirectoryMSI
 		 */
 		void clearSiteETTEntry(IntPtr vpn)
 		{
+			std::unique_lock<std::shared_mutex> wlock(site_ett_mutex);
 			site_ett.erase(vpn);
 		}
 
 	private:
 		std::unordered_map<IntPtr, SiteETTEntry> site_ett; // SITE ETT mapping: VPN -> ETT entry
+		mutable std::shared_mutex site_ett_mutex;          // Protects site_ett from concurrent access
 	};
 }

@@ -187,7 +187,7 @@ core_id_t MimicOS::flushTLB(int app_id, array<IntPtr, TLB_SHOOT_DOWN_MAX_SIZE> p
 
                 // Get the VPN (assuming 4KB base page size = 12 bits)
                 IntPtr vpn = page_batch[i] >> 12;
-                ParametricDramDirectoryMSI::PageTableRadix::SiteETTEntry& ett = radix_pt->getSiteETTEntry(vpn);
+                ParametricDramDirectoryMSI::PageTableRadix::SiteETTEntry ett = radix_pt->getSiteETTEntry(vpn);
 
                 if (ett.expiration_time > 0 && current_time >= ett.expiration_time)
                 {

@@ -125,7 +125,9 @@ namespace ParametricDramDirectoryMSI
 		pageFaultType fault_type_result = PF_WITHOUT_FAULT;
 		std::shared_mutex &page_lock = get_lock_for_page(address);
 
-		// std::shared_lock<std::shared_mutex> read_lock(page_lock);
+		// Acquire shared lock to protect page table traversal from concurrent
+		// modifications (page_moving, DMA_move_page, deletePage, etc.)
+		page_lock.lock_shared();
 
 		IntPtr offset = (address >> 39) & 0x1FF;
 
@@ -173,9 +175,11 @@ namespace ParametricDramDirectoryMSI
 						// This is a special page fault of moving page
 						// Note: page_faults_of_migration is counted at the MMU layer
 						// only when DMA_finish > current simulation time
+						page_lock.unlock_shared();
 						return PTWResult(page_size_result, visited_pts, ppn_result, pwc_latency, is_pagefault, PF_MOVING, current_frame->entries[offset].DMA_finish);
 					}
-					// read_lock.unlock();
+					// Release shared lock before handling page fault (may need write lock)
+					page_lock.unlock_shared();
 					if (restart_walk_after_fault)
 						os->handle_page_fault(address, core_id, getMaxLevel());
 
@@ -213,7 +217,8 @@ namespace ParametricDramDirectoryMSI
 #ifdef DEBUG
 					log_file << "[RADIX] Next level is NULL, we need to allocate a new frame" << std::endl;
 #endif
-					// read_lock.unlock();
+					// Release shared lock before handling page fault (may need write lock)
+					page_lock.unlock_shared();
 					if (restart_walk_after_fault)
 						os->handle_page_fault(address, core_id, getMaxLevel());
 
@@ -240,6 +245,9 @@ namespace ParametricDramDirectoryMSI
 			level--;
 			counter++;
 		}
+
+		// Release shared lock after walk completes
+		page_lock.unlock_shared();
 
 #ifdef DEBUG
 		log_file << "[RADIX] Finished walk for address: " << address << std::endl;
